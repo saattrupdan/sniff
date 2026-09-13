@@ -99,6 +99,29 @@ def test_formula_lookup_filters_polymers_transients_and_formula_labels(tmp_path)
     assert result["excluded"] == 4
 
 
+def test_fetch_policy_refuses_external_and_robots_disallowed_urls(tmp_path):
+    opener = Opener(FORMULA_RESULTS)
+    webbook = client(tmp_path, opener)
+
+    for url in (
+        "https://example.com/cgi/cbook.cgi?ID=C75070",
+        "https://webbook.nist.gov/cdn-cgi/example",
+    ):
+        try:
+            webbook.fetch_page(url)
+        except nist_webbook.WebBookError:
+            pass
+        else:
+            raise AssertionError(f"unsafe URL was accepted: {url}")
+    assert opener.requests == []
+    assert (
+        nist_webbook._NoRedirect().redirect_request(
+            None, None, 302, "redirect", {}, "https://example.com/"
+        )
+        is None
+    )
+
+
 def test_name_filter_rejects_polymer_transient_and_structural_notation():
     assert not nist_webbook._ordinary_name("Polyoxymethylene")
     assert not nist_webbook._ordinary_name("HCOH (hydroxymethylene)")
@@ -161,6 +184,24 @@ def test_enrichment_adds_proposals_without_changing_ptr_name(tmp_path):
     assert [item["name"] for item in enriched["nist_webbook"]] == ["Ethylenimine"]
 
 
+def test_public_fetch_rejects_external_and_robots_disallowed_urls(tmp_path):
+    opener = Opener(FORMULA_RESULTS)
+    webbook = client(tmp_path, opener)
+
+    for url in (
+        "https://example.com/cgi/cbook.cgi?ID=C75070",
+        "https://webbook.nist.gov/cdn-cgi/example",
+    ):
+        try:
+            webbook.fetch_page(url)
+        except nist_webbook.WebBookError:
+            pass
+        else:
+            raise AssertionError(f"unsafe URL was accepted: {url}")
+
+    assert opener.requests == []
+
+
 def test_rate_limiter_is_host_wide_across_different_crawl_states(tmp_path):
     schedule = tmp_path / "host-schedule.sqlite3"
     first = nist_webbook.WebBookClient(
@@ -185,6 +226,32 @@ def test_rate_limiter_is_host_wide_across_different_crawl_states(tmp_path):
     second.lookup_formula("C2H6O")
 
     assert slept == [3.0]
+
+
+def test_server_cooldown_extends_shared_host_schedule(tmp_path):
+    schedule = tmp_path / "host-schedule.sqlite3"
+    first = nist_webbook.WebBookClient(
+        cache_path=tmp_path / "first.sqlite3",
+        schedule_path=schedule,
+        opener=Opener(FORMULA_RESULTS),
+        clock=lambda: 10.0,
+        sleeper=lambda _delay: None,
+        crawl_delay=5,
+    )
+    first.defer_requests(20)
+    slept = []
+    second = nist_webbook.WebBookClient(
+        cache_path=tmp_path / "second.sqlite3",
+        schedule_path=schedule,
+        opener=Opener(FORMULA_RESULTS),
+        clock=lambda: 12.0,
+        sleeper=slept.append,
+        crawl_delay=5,
+    )
+
+    second.lookup_formula("C2H6O")
+
+    assert slept == [18.0]
 
 
 def test_rate_limiter_waits_between_request_starts(tmp_path):

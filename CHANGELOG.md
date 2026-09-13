@@ -29,8 +29,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Sniff now ships a generated, read-only PTR-focused SQLite catalogue derived from the
   NIST Chemistry WebBook. It provides offline exact-mass, formula, name, CAS and InChI
   lookup while keeping external names visibly separate from PTR-specific evidence. A
-  resumable maintainer crawler observes NIST's five-second delay and stores no HTML or
-  spectra in the package.
+  complete-sitemap maintainer crawler caches every canonical species page for offline
+  classification, resumes from per-page checkpoints, refreshes robots policy daily,
+  observes NIST's host-wide five-second delay and stores no HTML or spectra in the
+  package.
 - Every detected peak now has either a strict formula candidate or an explicit
   scientific interpretation. Known reagent ions, evidence-backed possible isotope
   channels and detector artefacts are excluded from automatic analyte assignment;

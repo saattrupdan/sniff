@@ -61,6 +61,11 @@ class WebBookError(RuntimeError):
     """A recoverable WebBook request, response, or parsing failure."""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class _SearchParser(HTMLParser):
     def __init__(self, kind):
         super().__init__(convert_charrefs=True)
@@ -230,6 +235,7 @@ class WebBookClient:
         opener=None,
         clock=None,
         sleeper=None,
+        waiter=None,
         crawl_delay=CRAWL_DELAY_S,
         timeout=REQUEST_TIMEOUT_S,
         max_mass_details=MAX_MASS_DETAILS,
@@ -238,9 +244,10 @@ class WebBookClient:
         self.schedule_path = (
             Path(schedule_path) if schedule_path is not None else SCHEDULE_PATH
         )
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
         self._clock = clock or time.time
         self._sleep = sleeper or time.sleep
+        self._wait = waiter or self._sleep
         self.crawl_delay = float(crawl_delay)
         self.timeout = float(timeout)
         self.max_mass_details = int(max_mass_details)
@@ -502,12 +509,38 @@ class WebBookClient:
                 ) from exc
             delay = reserved - now
         if delay > 0:
-            self._sleep(delay)
+            self._wait(delay)
+
+    def fetch_page(self, url):
+        """Fetch one allowed WebBook document under the host-wide crawl schedule."""
+        _validate_webbook_url(url)
+        self._reserve_request_slot()
+        return self._fetch(url)
+
+    def defer_requests(self, delay):
+        """Extend the host-wide schedule after a server-requested cooldown."""
+        deadline = self._clock() + max(0.0, float(delay))
+        try:
+            with self._connect_schedule() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT value FROM webbook_meta WHERE key = 'next_request_at'"
+                ).fetchone()
+                previous = float(row[0]) if row is not None else deadline
+                connection.execute(
+                    """
+                    INSERT INTO webbook_meta(key,value) VALUES ('next_request_at',?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    (max(previous, deadline),),
+                )
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise WebBookError(
+                "the shared WebBook request schedule is unavailable"
+            ) from exc
 
     def _fetch(self, url):
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc != "webbook.nist.gov":
-            raise WebBookError("refusing a non-WebBook URL")
+        _validate_webbook_url(url)
         request = urllib.request.Request(
             url,
             headers={
@@ -518,6 +551,8 @@ class WebBookClient:
             },
         )
         with self._opener(request, timeout=self.timeout) as response:
+            final_url = getattr(response, "geturl", lambda: url)()
+            _validate_webbook_url(final_url)
             body = response.read(MAX_RESPONSE_BYTES + 1)
         if len(body) > MAX_RESPONSE_BYTES:
             raise WebBookError("the WebBook response exceeded the size limit")
@@ -644,6 +679,15 @@ def _parse_detail(page, *, nist_id):
 
 def _query_url(**parameters):
     return BASE_URL + "?" + urllib.parse.urlencode(parameters)
+
+
+def _validate_webbook_url(url):
+    parsed = urllib.parse.urlparse(str(url))
+    if parsed.scheme != "https" or parsed.netloc != "webbook.nist.gov":
+        raise WebBookError("refusing a non-WebBook URL")
+    if parsed.path.startswith("/cdn-cgi/"):
+        raise WebBookError("the WebBook robots policy disallows /cdn-cgi/")
+    return str(url)
 
 
 def _id_from_href(href):

@@ -436,6 +436,23 @@ or produces the observed PTR ion. The maintainer-only
 host-wide five-second crawl delay, records resumable checkpoints and response hashes,
 and never bundles cached HTML or spectra.
 
+Maintainers rebuilding the complete catalogue first use the WebBook sitemap rather than
+an individual experiment or a preselected formula list:
+
+```bash
+uv run python scripts/crawl_webbook_species.py discover
+uv run python scripts/crawl_webbook_species.py crawl
+uv run python scripts/crawl_webbook_species.py status
+```
+
+The sitemap crawl checkpoints every canonical species page in
+`~/.sniff/nist-webbook-full.sqlite3` and keeps SHA-verified compressed responses under
+`~/.sniff/nist-webbook-pages/`. It is safe to stop and resume, refreshes robots policy
+daily, and takes at least 7.5 days for roughly 129,000 species at the required delay.
+Cached pages can be reparsed without network access. Only filtered identity metadata is
+exported to the package; WebBook HTML and EI spectra are never PTR identification
+evidence.
+
 ## How it works
 
 The baseline timebin calibration, transmission, concentration constant K and molar
