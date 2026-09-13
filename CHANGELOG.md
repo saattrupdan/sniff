@@ -22,14 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identities to an explicitly selected run while retaining every credible new detection.
 - New app review panels now give every peak with an available unique candidate an
   editable best guess: a preferred or canonical PTR Library name when available,
-  otherwise its best candidate
-  formula. Experiment-specific compounds influence initial ranking and supply the
-  preferred provisional isomer name; global matching prevents an automatic
-  compound/formula family from being assigned twice and uses the next-best available
-  candidate instead.
+  otherwise its best candidate formula. Experiment-specific compounds influence initial
+  ranking and supply the preferred provisional isomer name; global matching prevents an
+  automatic compound/formula family from being assigned twice and uses the next-best
+  available candidate instead.
 
 ### Changed
 
+- Fresh app reviews now fill remaining identity blanks after trace extraction refines
+  the measured peak apex. Reagent markers claim only their nearest peak within 12 mDa.
+  The former vague m/z 30.994 O₂⁺/NO⁺ region label is now the specific NO⁺ (¹⁵N)
+  isotope, preventing nearby formaldehyde and reagent-region satellites from receiving
+  misleading reagent labels.
 - New app-generated configs use analysis schema 2 with `empirical-v1` fitting and
   `formula-v1` isotope handling. Legacy configs retain their previous Gaussian and
   isotope-off arithmetic, and both models remain explicit rollback settings.

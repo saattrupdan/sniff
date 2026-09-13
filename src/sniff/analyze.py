@@ -404,8 +404,9 @@ _REAGENT_MZ = {
     32.997: "O2+ (17O)",
     33.994: "O2+ (18O)",
     29.997: "NO+",
-    30.994: "O2+/NO+ region",
+    30.994: "NO+ (15N) isotope",
 }
+_REAGENT_TOL_DA = 0.012
 
 
 def annotate_peaks(
@@ -469,6 +470,17 @@ def annotate_peaks(
         return (wsum(mz + formula_id.DM1) / i0, wsum(mz + formula_id.DM2) / i0)
 
     all_mz = sorted(q["mz"] for q in peaks)
+    reagent_labels = {}
+    for reagent_mz, reagent_name in _REAGENT_MZ.items():
+        if not peaks:
+            break
+        index, nearest = min(
+            enumerate(peaks),
+            key=lambda item: abs(item[1]["mz"] - reagent_mz * drift),
+        )
+        difference = abs(nearest["mz"] - reagent_mz * drift)
+        if difference <= _REAGENT_TOL_DA:
+            reagent_labels[index] = reagent_name
 
     def nearest_other(mz):
         best = None
@@ -480,7 +492,7 @@ def annotate_peaks(
         return best
 
     out = []
-    for p in peaks:
+    for peak_index, p in enumerate(peaks):
         mz, h = p["mz"], p.get("height", 0.0)
         e = dict(p)
         e["neutral_mass"] = round(mz - ptrms.PROTON, 4)
@@ -531,10 +543,8 @@ def annotate_peaks(
                     "must establish whether independent deconvolution is reliable",
                 }
         flags = []
-        for rmz, rname in _REAGENT_MZ.items():
-            if abs(mz - rmz * drift) < 0.03:
-                flags.append("reagent/cluster: " + rname)
-                break
+        if peak_index in reagent_labels:
+            flags.append("reagent/cluster: " + reagent_labels[peak_index])
         for q in peaks:
             if 0.008 < mz - q["mz"] < 0.4 and q.get("height", 0) > 20 * max(h, 1):
                 flags.append(f"possible tail/ringing of taller m/z {q['mz']:.3f}")
@@ -630,7 +640,7 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
         if identity_options:
             options[index] = identity_options
 
-    assignments = _optimal_identity_assignments(peaks, options)
+    assignments = optimal_identity_assignments(peaks, options)
     owners = {
         option["formula"].upper(): index for index, option in assignments.items()
     }
@@ -671,7 +681,7 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
             owners[top["formula"].upper()] = index
 
 
-def _optimal_identity_assignments(peaks, options):
+def optimal_identity_assignments(peaks, options):
     """Maximise assignment count, then total candidate quality, deterministically."""
     if not options:
         return {}
@@ -691,7 +701,9 @@ def _optimal_identity_assignments(peaks, options):
         key=lambda index: (
             -int(options[index][0]["interest"]),
             -float(options[index][0]["share"]),
-            -float(peaks[index].get("height", 0.0)),
+            -float(
+                peaks[index].get("height", peaks[index].get("abundance", 0.0))
+            ),
             float(peaks[index]["mz"]),
         ),
     )

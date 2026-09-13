@@ -355,6 +355,40 @@ class AutomaticAssignmentTest(unittest.TestCase):
         self.assertEqual(peaks[0]["suggested_formula"], "C3H8")
         self.assertEqual(peaks[0]["suggested_candidate_rank"], 1)
 
+    def test_reagent_markers_claim_only_the_nearest_peak(self):
+        peaks = [
+            {"mz": 30.994, "height": 10.0},
+            {"mz": 31.018, "height": 10.0},
+            {"mz": 31.984, "height": 10.0},
+            {"mz": 31.990, "height": 10.0},
+        ]
+
+        def candidates(mz, *args, **kwargs):
+            if abs(mz - 31.018) < 0.001:
+                return [
+                    {
+                        "formula": "CH2O",
+                        "name": "formaldehyde",
+                        "probability": 1.0,
+                    }
+                ]
+            return []
+
+        with mock.patch.object(analyze.formula_id, "score_peak", side_effect=candidates):
+            _, annotated = analyze.annotate_peaks(
+                peaks,
+                mass_axis=identity_mass_axis(),
+                assign_all_library=True,
+            )
+
+        self.assertEqual(annotated[0]["suggested_label"], "NO+ (15N) isotope")
+        self.assertEqual(annotated[1]["suggested_label"], "formaldehyde")
+        self.assertEqual(annotated[1]["suggested_formula"], "CH2O")
+        o2_labels = [
+            peak.get("suggested_label") for peak in annotated if "O2+" in peak.get("suggested_label", "")
+        ]
+        self.assertEqual(o2_labels, ["O2+"])
+
     def test_headless_default_keeps_a_low_share_library_match_unassigned(self):
         peaks = [
             {

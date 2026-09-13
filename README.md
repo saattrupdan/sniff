@@ -456,8 +456,10 @@ composition, not "nearest mass". New app review panels use those rankings to giv
 candidate-backed peak an editable chemical default: a preferred or canonical PTR Library
 name when available, otherwise the best candidate formula. A global match assigns each
 formula/compound family at most once and lets a conflicting peak use its next-best
-available candidate. The review continues to show ambiguity, score shares, and
-alternative names. Candidate rankings cannot determine structural isomers; an
+available candidate. After extracting the review traces, the app repeats this step with
+refined measured apexes and fills any fresh-config blanks that now have a candidate. The
+review continues to show ambiguity, score shares, and alternative names. Candidate
+rankings cannot determine structural isomers; an
 interest-selected or
 canonical isomer name is a provisional best guess from the bundled mapping, not proof of
 structure. Proton-transfer rate constants
@@ -466,7 +468,13 @@ compiled from the **PTR Library** (Pagonis, Sekimoto & de Gouw, *J. Am. Soc. Mas
 Spectrom.* 2019, doi.org/10.1007/s13361-019-02209-3; tinyurl.com/PTRLibrary), with
 measured k where available (else Su-Chesnavich capture-theory k, flagged
 `k_estimated`), plus proton affinity, isomer names, and fragmentation flags. Use
-`sniff rates` to browse the bundled values. Accepting a formula automatically derives
+`sniff rates` to browse the bundled values. An empty candidate list does not mean that
+this named table is too small: it means no plausible protonated-neutral composition fits
+the measured m/z within the 12 mDa exact-mass tolerance. Such a peak may instead be a
+reagent or inorganic ion, isotope, fragment, unresolved interference, noise peak, or a
+mass-calibration mismatch. Extending the named table can turn more formula labels into
+compound names, but cannot create a formula candidate where enumeration found none.
+Accepting a formula automatically derives
 its exact natural M+1 and M+2 auxiliary channels. These support expected/observed
 isotope diagnostics and guarded subtraction when a lower-mass compound's isotope
 overlaps another assigned parent. They do not become additional analytes.

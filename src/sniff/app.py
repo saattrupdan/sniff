@@ -732,6 +732,7 @@ class Session:
                 mass_axis=mass_axis,
                 progress=self._build_sink(prep_start),
                 should_stop=self._cancel.is_set,
+                assign_identity_defaults=not saved_review,
             )
             if not _h5_still_matches(source_path, fingerprint):
                 raise RuntimeError("the H5 file changed while it was being opened")
@@ -835,7 +836,14 @@ class Session:
         return answer
 
     def _payload(
-        self, path, config, *, mass_axis=None, progress=None, should_stop=None
+        self,
+        path,
+        config,
+        *,
+        mass_axis=None,
+        progress=None,
+        should_stop=None,
+        assign_identity_defaults=False,
     ):
         settings = resolve_analysis_settings(config)
         return viz.build_viz_data(
@@ -849,6 +857,7 @@ class Session:
             merge_note=config.get("merge_note") or "",
             progress=progress,
             should_stop=should_stop,
+            assign_identity_defaults=assign_identity_defaults,
         )
 
     def close(self, reset_status=True):

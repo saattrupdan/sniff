@@ -191,6 +191,56 @@ def _validate_embedded_absolute_axis(payload):
         )
 
 
+def _apply_refined_identity_defaults(peaks, peaks_cfg):
+    """Fill fresh-review blanks from candidates scored at their extracted apexes."""
+    from .analyze import optimal_identity_assignments
+
+    reserved = {
+        str(peak.get("formula") or "").upper()
+        for peak in peaks_cfg
+        if peak.get("formula")
+    }
+    options = {}
+    for index, peak in enumerate(peaks):
+        if "labelAuto" not in peak:
+            continue
+        identity_options = []
+        for rank, candidate in enumerate(peak.get("candidates") or [], start=1):
+            formula = candidate.get("formula")
+            if not formula or formula.upper() in reserved:
+                continue
+            identity_options.append(
+                {
+                    "formula": formula,
+                    "label": candidate.get("preferred_name")
+                    or candidate.get("name")
+                    or formula,
+                    "rank": rank,
+                    "share": candidate.get("probability", 0.0),
+                    "interest": bool(candidate.get("interest_matches")),
+                    "k": candidate.get("k"),
+                    "k_estimated": bool(candidate.get("k_estimated")),
+                    "flags": list(candidate.get("flags") or []),
+                }
+            )
+        if identity_options:
+            options[index] = identity_options
+
+    for index, option in optimal_identity_assignments(peaks, options).items():
+        peak = peaks[index]
+        config_peak = peaks_cfg[index]
+        peak["label"] = option["label"]
+        peak["formula"] = option["formula"]
+        peak["k"] = option["k"]
+        peak["k_estimated"] = option["k_estimated"]
+        peak["flags"] = option["flags"]
+        peak.pop("labelAuto", None)
+        peak["_config_original"]["label"] = option["label"]
+        peak["_config_original"]["formula"] = option["formula"]
+        config_peak["label"] = option["label"]
+        config_peak["formula"] = option["formula"]
+
+
 def build_viz_data(
     f,
     peaks_cfg,
@@ -208,6 +258,7 @@ def build_viz_data(
     mass_axis=None,
     progress=None,
     should_stop=None,
+    assign_identity_defaults=False,
 ):
     """Assemble everything the HTML app needs into one JSON-able dict.
 
@@ -221,6 +272,7 @@ def build_viz_data(
                  larger one — a caller with work of its own scales it.
     should_stop: optional callback polled between phases and, through
                  extract_traces, every block; true raises ptrms.AnalysisCancelled.
+    assign_identity_defaults: persist refined-apex best guesses into a new review.
     """
     compounds_of_interest = formula_id.normalise_compounds_of_interest(
         (config_base or {}).get("compounds_of_interest"), strict=False
@@ -529,6 +581,8 @@ def build_viz_data(
                 ),
             }
         )
+    if assign_identity_defaults:
+        _apply_refined_identity_defaults(peaks, peaks_cfg)
     _say(1.0)
 
     def _clean(arr):
@@ -2421,9 +2475,9 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
       el.innerHTML=provenance+confNote+clusterNote+isotopeNote+'<div class="cand chosen"><span class="f">'+esc(p.formula||p.label)+'</span>'+
         (showName?'<span class="cname">'+esc(showName)+'</span>':'')+
         '<span class="meta">'+(assigned?'current formula assignment':'label only; not formula-assigned')+'</span></div>'+
-        '<div class="idnote" style="margin-top:8px">No enumerated formula candidates for this m/z — it looks like a reagent/inorganic ion, a manually-added peak, or a mass outside the organic window. The existing '+(assigned?'formula assignment':'label')+' is kept as-is.</div>';
+        '<div class="idnote" style="margin-top:8px">No plausible protonated-neutral formula fits this m/z within the exact-mass tolerance. It may be a reagent/inorganic ion, isotope, fragment, unresolved interference, noise peak, or mass-calibration mismatch. The existing '+(assigned?'formula assignment':'label')+' is kept as-is.</div>';
     } else {
-      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+'<div class="mut">No candidate formulas for this peak (a reagent/inorganic ion, added manually, or outside the mass window).</div>';
+      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+'<div class="mut">No plausible protonated-neutral formula fits this m/z within the exact-mass tolerance. It may be a reagent/inorganic ion, isotope, fragment, unresolved interference, noise peak, or mass-calibration mismatch.</div>';
     }
     return; }
   if(conf) conf.innerHTML=status+` <span class="mut">· ${p.candidates.length===1

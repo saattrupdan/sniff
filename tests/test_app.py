@@ -170,9 +170,11 @@ def test_open_reuses_calibration_for_the_same_unchanged_h5(tmp_path):
     make_h5(h5)
     session = app.Session()
     stages = []
+    assignment_defaults = []
 
     def observed_payload(f, peaks, ranges, **kwargs):
         stages.append(session.stage)
+        assignment_defaults.append(kwargs.get("assign_identity_defaults"))
         return payload_stub(f, peaks, ranges, **kwargs)
 
     with (
@@ -197,6 +199,7 @@ def test_open_reuses_calibration_for_the_same_unchanged_h5(tmp_path):
         "Computing data for a new review",
         "Loading H5 data for the saved review",
     ]
+    assert assignment_defaults == [True, False]
 
 
 def test_changed_h5_invalidates_saved_calibration(tmp_path):

@@ -138,6 +138,73 @@ class VizDataTest(unittest.TestCase):
             ):
                 return viz.build_viz_data(h5, peaks_cfg=peaks_cfg, ranges_cfg=[])
 
+    def test_refined_candidates_fill_only_available_unique_fresh_review_blanks(self):
+        config_peaks = [
+            {"mz": 59.049, "label": "acetone", "formula": "C3H6O"},
+            {"mz": 44.062, "label": ""},
+            {"mz": 44.063, "label": ""},
+        ]
+        ethenamine = {
+            "formula": "C2H5N",
+            "name": "ethenamine",
+            "probability": 0.9,
+            "k": 2.1,
+            "k_estimated": True,
+            "flags": ["fragmentation reported"],
+        }
+        review_peaks = [
+            {
+                "_config_original": dict(config_peaks[0]),
+                "mz": 59.049,
+                "abundance": 200.0,
+                "label": "acetone",
+                "formula": "C3H6O",
+                "candidates": [],
+            },
+            {
+                "_config_original": dict(config_peaks[1]),
+                "mz": 44.062,
+                "abundance": 100.0,
+                "label": "m44.062",
+                "labelAuto": "m44.062",
+                "formula": "",
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "probability": 0.1,
+                        "k": 1.0,
+                        "k_estimated": False,
+                        "flags": [],
+                    },
+                    ethenamine,
+                ],
+            },
+            {
+                "_config_original": dict(config_peaks[2]),
+                "mz": 44.063,
+                "abundance": 10.0,
+                "label": "m44.063",
+                "labelAuto": "m44.063",
+                "formula": "",
+                "candidates": [{**ethenamine, "probability": 0.5}],
+            },
+        ]
+
+        viz._apply_refined_identity_defaults(review_peaks, config_peaks)
+
+        self.assertEqual(review_peaks[0]["label"], "acetone")
+        self.assertEqual(review_peaks[1]["label"], "ethenamine")
+        self.assertEqual(review_peaks[1]["formula"], "C2H5N")
+        self.assertEqual(review_peaks[1]["k"], 2.1)
+        self.assertTrue(review_peaks[1]["k_estimated"])
+        self.assertEqual(review_peaks[1]["flags"], ["fragmentation reported"])
+        self.assertNotIn("labelAuto", review_peaks[1])
+        self.assertEqual(config_peaks[1]["label"], "ethenamine")
+        self.assertEqual(config_peaks[1]["formula"], "C2H5N")
+        self.assertEqual(review_peaks[2]["label"], "m44.063")
+        self.assertIn("labelAuto", review_peaks[2])
+
     def test_a_name_the_tool_invented_is_never_saved_as_an_assignment(self):
         # An unnamed peak still needs something to draw on the spectrum, so a
         # mass-derived stand-in stands in for display. It must not reach the config:
