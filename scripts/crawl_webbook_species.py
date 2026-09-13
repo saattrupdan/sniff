@@ -36,6 +36,7 @@ SITEMAP_NS = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 SPECIES_URL = re.compile(
     r"^https://webbook\.nist\.gov/cgi/cbook\.cgi\?ID=([A-Z][A-Z0-9]*)$"
 )
+SITEMAP_SENTINELS = {"https://webbook.nist.gov/cgi/cbook.cgi?ID=x"}
 SITEMAP_URL = re.compile(r"^https://webbook\.nist\.gov/sitemap_[1-9][0-9]*\.xml\.gz$")
 STOP_REQUESTED = False
 STOP_EVENT = threading.Event()
@@ -316,6 +317,45 @@ def _refresh_robots(connection, client, cache_dir, *, force=False):
     return policy, float(updated[0])
 
 
+def _species_entry(location):
+    if location in SITEMAP_SENTINELS:
+        return None
+    match = SPECIES_URL.fullmatch(location)
+    if match:
+        return match.group(1), location
+    parsed = urllib.parse.urlparse(location)
+    if parsed.scheme == "https" and parsed.netloc == "webbook.nist.gov":
+        if parsed.path == "/cgi/cbook.cgi":
+            raise RuntimeError(f"malformed species URL in sitemap: {location}")
+        if parsed.path.startswith("/cgi/inchi/"):
+            raw_value = parsed.path.removeprefix("/cgi/inchi/")
+            try:
+                value = urllib.parse.unquote_to_bytes(raw_value).decode("utf-8")
+            except UnicodeDecodeError:
+                value = ""
+            canonical = urllib.parse.quote(value, safe="/().-*")
+            layers = value.split("/")
+            if (
+                parsed.query
+                or parsed.fragment
+                or not raw_value.startswith("InChI%3D1S/")
+                or canonical != raw_value
+                or len(layers) < 2
+                or any(not layer for layer in layers)
+            ):
+                raise RuntimeError(f"malformed InChI URL in sitemap: {location}")
+            return "U" + _sha(location.encode("utf-8")), location
+    return None
+
+
+def _webbook_id(key, url):
+    parsed = urllib.parse.urlparse(url)
+    identifiers = urllib.parse.parse_qs(parsed.query).get("ID", [])
+    if parsed.path == "/cgi/cbook.cgi" and identifiers == [key]:
+        return key
+    return None
+
+
 def discover(state_path=STATE_PATH, cache_dir=CACHE_DIR, *, minimum_species=100_000):
     connection = _connect(state_path)
     client = nist_webbook.WebBookClient(timeout=30.0)
@@ -330,7 +370,7 @@ def discover(state_path=STATE_PATH, cache_dir=CACHE_DIR, *, minimum_species=100_
     sitemap_urls = _locations(index, SITEMAP_INDEX, "sitemapindex")
     if not sitemap_urls:
         raise RuntimeError("the WebBook sitemap index contained no child sitemaps")
-    species = set()
+    species = {}
     for number, url in enumerate(sitemap_urls, 1):
         nist_webbook._validate_webbook_url(url)
         if not SITEMAP_URL.fullmatch(url):
@@ -339,11 +379,12 @@ def discover(state_path=STATE_PATH, cache_dir=CACHE_DIR, *, minimum_species=100_
             raise RuntimeError(f"the current robots policy disallows sitemap: {url}")
         body = _fetch_document(connection, client, cache_dir, url, "sitemap")
         for location in _locations(body, url, "urlset"):
-            match = SPECIES_URL.fullmatch(location)
-            if match:
-                species.add(match.group(1))
-            elif "/cgi/cbook.cgi" in location:
-                raise RuntimeError(f"malformed species URL in sitemap: {location}")
+            entry = _species_entry(location)
+            if entry:
+                key, species_url = entry
+                previous = species.setdefault(key, species_url)
+                if previous != species_url:
+                    raise RuntimeError(f"species manifest key collision: {key}")
         print(
             f"sitemap {number}/{len(sitemap_urls)}: {len(species)} species", flush=True
         )
@@ -351,8 +392,9 @@ def discover(state_path=STATE_PATH, cache_dir=CACHE_DIR, *, minimum_species=100_
         raise RuntimeError(
             f"refusing an implausibly small WebBook manifest ({len(species)} species)"
         )
-    ordered = sorted(species)
-    manifest_sha = _sha(("\n".join(ordered) + "\n").encode("ascii"))
+    ordered = sorted(species.items())
+    manifest = "".join(f"{key}\t{url}\n" for key, url in ordered)
+    manifest_sha = _sha(manifest.encode("utf-8"))
     now = time.time()
     connection.execute(
         """
@@ -364,7 +406,7 @@ def discover(state_path=STATE_PATH, cache_dir=CACHE_DIR, *, minimum_species=100_
     )
     connection.executemany(
         "INSERT OR IGNORE INTO generation_species(manifest_sha,nist_id) VALUES (?,?)",
-        ((manifest_sha, nist_id) for nist_id in ordered),
+        ((manifest_sha, key) for key, _url in ordered),
     )
     connection.executemany(
         """
@@ -373,10 +415,14 @@ def discover(state_path=STATE_PATH, cache_dir=CACHE_DIR, *, minimum_species=100_
         """,
         (
             (
-                nist_id,
-                f"https://webbook.nist.gov/cgi/cbook.cgi?ID={nist_id}&Units=SI",
+                key,
+                (
+                    f"https://webbook.nist.gov/cgi/cbook.cgi?ID={key}&Units=SI"
+                    if SPECIES_URL.fullmatch(url)
+                    else url
+                ),
             )
-            for nist_id in ordered
+            for key, url in ordered
         ),
     )
     connection.execute(
@@ -549,6 +595,9 @@ def crawl(state_path=STATE_PATH, cache_dir=CACHE_DIR, max_records=None):
                 body = client.fetch_page(row["url"])
                 digest, path = _write_body(cache_dir, body)
                 detail = nist_webbook._parse_detail(body, nist_id=row["nist_id"])
+                detail["url"] = row["url"]
+                detail["webbook_id"] = _webbook_id(row["nist_id"], row["url"])
+                detail["manifest_key"] = row["nist_id"]
                 _update_claimed(
                     connection,
                     owner,
@@ -721,7 +770,7 @@ def reparse(state_path=STATE_PATH):
     connection = _connect(state_path)
     rows = connection.execute(
         """
-        SELECT nist_id,response_sha,body_path FROM species_job
+        SELECT nist_id,url,response_sha,body_path FROM species_job
         WHERE body_path IS NOT NULL AND response_sha IS NOT NULL
         ORDER BY nist_id
         """
@@ -731,6 +780,9 @@ def reparse(state_path=STATE_PATH):
         try:
             body = _read_body(Path(row["body_path"]), row["response_sha"])
             detail = nist_webbook._parse_detail(body, nist_id=row["nist_id"])
+            detail["url"] = row["url"]
+            detail["webbook_id"] = _webbook_id(row["nist_id"], row["url"])
+            detail["manifest_key"] = row["nist_id"]
             connection.execute(
                 "UPDATE species_job SET status='done',error=NULL,detail_json=?,updated_at=? "
                 "WHERE nist_id=?",

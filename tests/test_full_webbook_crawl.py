@@ -29,13 +29,15 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
     <sitemapindex xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>
       <sitemap><loc>{sitemap}</loc></sitemap>
     </sitemapindex>""".encode()
+    inchi_url = "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/C2H4O/c1-2-3/h2H%2C1H3"
     urls = gzip.compress(
-        b"""<?xml version='1.0'?>
+        f"""<?xml version='1.0'?>
         <urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>
           <url><loc>https://webbook.nist.gov/cgi/cbook.cgi?ID=C75070</loc></url>
-          <url><loc>https://webbook.nist.gov/cgi/inchi/example</loc></url>
+          <url><loc>https://webbook.nist.gov/cgi/cbook.cgi?ID=U109047</loc></url>
+          <url><loc>{inchi_url}</loc></url>
           <url><loc>https://example.com/not-a-species</loc></url>
-        </urlset>"""
+        </urlset>""".encode()
     )
     detail = b"""<!doctype html><html><body><main>
       <h1 id='Top'>Acetaldehyde</h1><ul>
@@ -50,6 +52,8 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
         crawler.SITEMAP_INDEX: index,
         sitemap: urls,
         "https://webbook.nist.gov/cgi/cbook.cgi?ID=C75070&Units=SI": detail,
+        "https://webbook.nist.gov/cgi/cbook.cgi?ID=U109047&Units=SI": detail,
+        inchi_url: detail,
     }
 
     class FakeClient:
@@ -64,12 +68,12 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
     cache = tmp_path / "pages"
 
     manifest, count = crawler.discover(state, cache, minimum_species=1)
-    assert count == 1
-    assert crawler.status(state, emit=False)["remaining"] == 1
-    assert crawler.crawl(state, cache) == 1
+    assert count == 3
+    assert crawler.status(state, emit=False)["remaining"] == 3
+    assert crawler.crawl(state, cache) == 3
 
     summary = crawler.status(state, emit=False)
-    assert summary["done"] == 1
+    assert summary["done"] == 3
     assert summary["remaining"] == 0
     with crawler._connect(state) as connection:
         row = connection.execute(
@@ -77,6 +81,13 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
         ).fetchone()
     assert Path(row["body_path"]).is_file()
     assert json.loads(row["detail_json"])["name"] == "Acetaldehyde"
+    with crawler._connect(state) as connection:
+        u_detail = json.loads(
+            connection.execute(
+                "SELECT detail_json FROM species_job WHERE nist_id='U109047'"
+            ).fetchone()[0]
+        )
+    assert u_detail["webbook_id"] == "U109047"
 
     monkeypatch.setattr(
         crawler.nist_webbook,
@@ -84,7 +95,14 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("network used")),
     )
     crawler.reparse(state)
-    assert crawler.status(state, emit=False)["done"] == 1
+    assert crawler.status(state, emit=False)["done"] == 3
+    with crawler._connect(state) as connection:
+        reparsed = json.loads(
+            connection.execute(
+                "SELECT detail_json FROM species_job WHERE nist_id='U109047'"
+            ).fetchone()[0]
+        )
+    assert reparsed["webbook_id"] == "U109047"
     assert manifest
 
 
@@ -276,6 +294,37 @@ def test_cached_robots_policy_keeps_its_original_refresh_deadline(tmp_path):
 
     assert checked_at == fetched_at
     assert calls == [crawler.ROBOTS_URL]
+
+
+def test_species_manifest_accepts_inchi_urls_and_only_known_sentinel():
+    crawler = _crawler_module()
+    inchi = "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/H2O/h1H2"
+
+    key, url = crawler._species_entry(inchi)
+
+    assert key.startswith("U") and url == inchi
+    assert crawler._species_entry("https://webbook.nist.gov/cgi/cbook.cgi?ID=x") is None
+    with pytest.raises(RuntimeError, match="malformed species URL"):
+        crawler._species_entry("https://webbook.nist.gov/cgi/cbook.cgi?ID=bad")
+    for malformed in (
+        "https://webbook.nist.gov/cgi/inchi/InChI=1S/H2O/h1H2",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3d1S/H2O/h1H2",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/H2O/%ZZ",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/H2O/%FF",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3D1S%2FH2O/h1H2",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/H2O//h1H2",
+        "https://webbook.nist.gov/cgi/inchi/InChI%3D1S/H2O/%28h1H2%29",
+    ):
+        with pytest.raises(RuntimeError, match="malformed InChI URL"):
+            crawler._species_entry(malformed)
+    assert (
+        crawler._webbook_id(
+            "U109047",
+            "https://webbook.nist.gov/cgi/cbook.cgi?ID=U109047&Units=SI",
+        )
+        == "U109047"
+    )
 
 
 def test_specific_robots_group_controls_species_requests():
