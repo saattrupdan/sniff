@@ -40,7 +40,12 @@ class AutoPeakSettingsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
             config_path.write_text(
-                json.dumps({"analyze": {"R": 1800.0, "R_phys": 3200.0}}),
+                json.dumps(
+                    {
+                        "analyze": {"R": 1800.0, "R_phys": 3200.0},
+                        "compounds_of_interest": ["acetone"],
+                    }
+                ),
                 encoding="utf-8",
             )
             args = self._args(config=str(config_path))
@@ -61,12 +66,15 @@ class AutoPeakSettingsTest(unittest.TestCase):
                     analyze,
                     "annotate_peaks",
                     return_value=(1.0, [{**detected[0], "suggested_label": "test"}]),
-                ),
+                ) as annotate,
             ):
                 result = analyze._load_peaks(args, h5)
 
         self.assertEqual(result, [{"mz": 30.0, "label": "test"}])
         self.assertEqual(detect.call_args.kwargs["R_phys"], 3200.0)
+        self.assertEqual(
+            annotate.call_args.kwargs["compounds_of_interest"], ["acetone"]
+        )
 
     def test_configured_r_changes_auto_merge_behaviour(self):
         args = self._args()

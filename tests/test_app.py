@@ -859,7 +859,7 @@ def test_open_validates_and_stores_compounds_of_interest(server, tmp_path):
     h5 = tmp_path / "run.h5"
     make_h5(h5)
     with (
-        mock.patch.object(app, "auto_peaks", return_value=[]),
+        mock.patch.object(app, "auto_peaks", return_value=[]) as detect_peaks,
         mock.patch.object(app, "auto_ranges", return_value=[]),
         mock.patch.object(app.viz, "build_viz_data", payload_stub),
     ):
@@ -871,6 +871,10 @@ def test_open_validates_and_stores_compounds_of_interest(server, tmp_path):
         state = _wait_ready(api)
 
     assert state["status"] == "ready"
+    assert detect_peaks.call_args.kwargs["compounds_of_interest"] == [
+        {"name": "acetone", "formula": "C3H6O", "mz": 59.0491},
+        {"name": "propanal", "formula": "C3H6O", "mz": 59.0491},
+    ]
     config = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
     assert config["compounds_of_interest"] == [
         {"name": "acetone", "formula": "C3H6O", "mz": 59.0491},

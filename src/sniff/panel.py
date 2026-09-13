@@ -64,6 +64,10 @@ def adapt_peak_table(template_peaks, detected_peaks, R_phys=2400.0):
                 )
                 continue
         target = detected[best]
+        # A transferred identity is authoritative as a unit. Do not combine a curated
+        # label-only source with an unrelated automatic formula from the target run.
+        for field in _IDENTITY_FIELDS:
+            target.pop(field, None)
         for field in _IDENTITY_FIELDS:
             if field in source:
                 target[field] = copy.deepcopy(source[field])
@@ -78,13 +82,38 @@ def adapt_peak_table(template_peaks, detected_peaks, R_phys=2400.0):
         )
 
     new_peaks = [detected[index] for index in sorted(unused)]
+    used_formulas = {
+        str(peak.get("formula") or "").strip().upper()
+        for peak in adapted
+        if peak.get("formula")
+    }
+    used_labels = {
+        str(peak.get("label") or "").strip().casefold()
+        for peak in adapted
+        if peak.get("label")
+    }
+    duplicates_suppressed = []
+    for peak in new_peaks:
+        formula = str(peak.get("formula") or "").strip().upper()
+        label = str(peak.get("label") or "").strip().casefold()
+        if (formula and formula in used_formulas) or (label and label in used_labels):
+            duplicates_suppressed.append(float(peak["mz"]))
+            peak.pop("formula", None)
+            peak["label"] = ""
+            continue
+        if formula:
+            used_formulas.add(formula)
+        if label:
+            used_labels.add(label)
     adapted.extend(new_peaks)
     adapted.sort(key=lambda peak: float(peak["mz"]))
     return adapted, {
         "matched": matches,
         "missing": missing,
         "new_target_peaks": [float(peak["mz"]) for peak in new_peaks],
+        "automatic_duplicates_suppressed": duplicates_suppressed,
         "n_matched": len(matches),
         "n_missing": len(missing),
         "n_new": len(new_peaks),
+        "n_automatic_duplicates_suppressed": len(duplicates_suppressed),
     }

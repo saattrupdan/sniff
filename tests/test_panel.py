@@ -29,6 +29,30 @@ class PanelAdaptationTest(unittest.TestCase):
         self.assertEqual(diagnostics["n_matched"], 1)
         self.assertEqual(diagnostics["n_new"], 1)
 
+    def test_transferred_label_does_not_keep_an_automatic_formula(self):
+        peaks, _ = panel.adapt_peak_table(
+            [{"mz": 59.049, "label": "reviewed unknown"}],
+            [{"mz": 59.05, "label": "acetone", "formula": "C3H6O"}],
+        )
+
+        self.assertEqual(peaks[0]["label"], "reviewed unknown")
+        self.assertNotIn("formula", peaks[0])
+
+    def test_new_automatic_identity_cannot_duplicate_a_transferred_one(self):
+        peaks, diagnostics = panel.adapt_peak_table(
+            [{"mz": 59.049, "label": "acetone", "formula": "C3H6O"}],
+            [
+                {"mz": 59.05, "label": "acetone", "formula": "C3H6O"},
+                {"mz": 59.07, "label": "acetone", "formula": "C3H6O"},
+            ],
+        )
+
+        self.assertEqual(peaks[0]["label"], "acetone")
+        self.assertEqual(peaks[0]["formula"], "C3H6O")
+        self.assertEqual(peaks[1]["label"], "")
+        self.assertNotIn("formula", peaks[1])
+        self.assertEqual(diagnostics["n_automatic_duplicates_suppressed"], 1)
+
     def test_missing_target_is_not_snapped_to_an_unrelated_peak(self):
         peaks, diagnostics = panel.adapt_peak_table(
             [{"mz": 59.0, "formula": "C3H6O"}], [{"mz": 60.0}]

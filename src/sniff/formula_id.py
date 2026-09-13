@@ -391,10 +391,24 @@ def score_peak(
         if interest_matches:
             score *= CONTEXT_PRIOR_FACTOR
         known = _known(formula)
+        names = []
+        seen_names = set()
+        if known:
+            for candidate_name in [known.get("name"), *(known.get("isomers") or [])]:
+                candidate_name = " ".join(str(candidate_name or "").split())
+                key = candidate_name.casefold()
+                if candidate_name and key not in seen_names:
+                    names.append(candidate_name)
+                    seen_names.add(key)
+        preferred_name = interest_matches[0] if interest_matches else None
+        if preferred_name is None and names:
+            preferred_name = names[0]
         scored.append(
             {
                 "formula": formula,
                 "name": known["name"] if known else None,
+                **({"names": names} if names else {}),
+                **({"preferred_name": preferred_name} if preferred_name else {}),
                 "ion_mz": round(ion_mz, 4),
                 "delta_mDa": round(delta_mDa, 1),
                 "dbe": round(dbe(counts), 1),

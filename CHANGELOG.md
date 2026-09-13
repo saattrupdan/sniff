@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Hand-drawn review peaks now snap to a measured apex and request formula candidates
   from the local server. **Use table on another file** conservatively transfers
   identities to an explicitly selected run while retaining every credible new detection.
+- New app review panels now fill as many editable PTR Library compound defaults as
+  possible. Experiment-specific compounds influence initial ranking and supply the
+  preferred provisional isomer name; global matching prevents an automatic
+  compound/formula family
+  from being assigned twice and uses the next-best available library candidate instead.
 
 ### Changed
 

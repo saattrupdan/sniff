@@ -122,10 +122,11 @@ gets the deterministic pipeline — detected peaks and detected intervals — wr
 that path and then loaded, so the panel starts as a starting point rather than an empty
 table. **Use table on another file** explicitly carries the current chemical identities
 to a newly selected run. Sniff matches them one-to-one to that file's measured peaks,
-adds every other credible detection as an unknown, and never transfers ranges, manual
-windows, or calibration. Missing or ambiguous targets are reported rather than snapped
-to unrelated peaks. **Export** runs the full-precision analysis to `<name>.csv` beside
-the file and leaves everything open; if a table that is not a sniff summary already
+adds every other credible detection with a unique editable library best guess where one
+is available, and never transfers ranges, manual windows, or calibration. Missing or
+ambiguous targets are reported rather than snapped to unrelated peaks. **Export** runs
+the full-precision analysis to `<name>.csv` beside the file and leaves everything open;
+if a table that is not a sniff summary already
 sits at that name — a Viewer export, say — it writes `<name>-sniff.csv` instead of
 overwriting it. Opening another file closes the current one, since a large run holds its
 memory.
@@ -442,17 +443,23 @@ then non-negative amplitudes are solved per cycle. Ill-conditioned components ar
 withheld, and a reported Gaussian fallback is used when no trustworthy empirical
 profile exists. Time segments are found by log-space plateau detection on a composite
 VOC signal. Before a run starts, the app can accept compounds of particular interest
-from the bundled PTR Library. These
-names provide a modest contextual prior by doubling the matching formula's ranking
-weight; they do not force detection, prove presence, establish identity, or suppress
-other credible peaks.
-The selection remains in the saved config. Compound identification enumerates candidate
-molecular formulas offline (no external database) and ranks them by exact-mass error,
-the measured vs predicted ¹³C(M+1)/heteroatom(M+2, e.g. S/Cl) isotope pattern,
-plausibility (integer DBE, nitrogen rule, element ratios), and any declared contextual
-prior — so near-isobars are told apart by composition, not "nearest mass". Candidate
-rankings cannot determine structural isomers; names and isomer labels come from the
-bundled PTR Library mapping. Proton-transfer rate constants
+from the bundled PTR Library. These names provide a modest contextual prior by doubling
+the matching formula's ranking weight. They also become the preferred editable name
+when that formula is selected, but they do not force detection, prove presence,
+establish identity, or suppress other credible peaks. The selection remains in the
+saved config.
+Compound identification enumerates candidate molecular formulas offline (no external
+database) and ranks them by exact-mass error, the measured vs predicted ¹³C(M+1)/
+heteroatom(M+2, e.g. S/Cl) isotope pattern, plausibility (integer DBE, nitrogen rule,
+element ratios), and any declared contextual prior — so near-isobars are told apart by
+composition, not "nearest mass". New app review panels use those rankings to fill as
+many editable PTR Library compound defaults as possible. A global match assigns each
+formula/compound family at most once and lets a conflicting peak use its next-best
+available library candidate. The review continues to show ambiguity, score shares, and
+alternative names. Candidate rankings cannot determine structural isomers; an
+interest-selected or
+canonical isomer name is a provisional best guess from the bundled mapping, not proof of
+structure. Proton-transfer rate constants
 come from the bundled 218-compound table when the formula is known. The entries are
 compiled from the **PTR Library** (Pagonis, Sekimoto & de Gouw, *J. Am. Soc. Mass
 Spectrom.* 2019, doi.org/10.1007/s13361-019-02209-3; tinyurl.com/PTRLibrary), with

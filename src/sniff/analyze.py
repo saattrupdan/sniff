@@ -417,6 +417,8 @@ def annotate_peaks(
     R_phys=2400.0,
     elements=None,
     mass_axis=None,
+    compounds_of_interest=None,
+    assign_all_library=False,
 ):
     """Enrich detected peaks with candidate FORMULA assignments (scored by mass +
     isotope pattern + plausibility) and artifact flags, so the agent/expert can
@@ -433,8 +435,8 @@ def annotate_peaks(
     `delta_mDa` is the exact-mass residual after that handling, plus
     predicted/observed isotope ratios and a normalised candidate score/share
     (`probability`). It is not a
-    calibrated identification probability; conservative assignment gates below
-    deliberately require multiple candidates."""
+    calibrated identification probability. Automatic names are editable best guesses;
+    formula-only unknowns retain conservative assignment gates."""
     if mass_axis is not None:
         ptrms.validate_mass_axis(mass_axis)
     tbl = ptrms.load_rate_constants()
@@ -483,7 +485,11 @@ def annotate_peaks(
         e = dict(p)
         e["neutral_mass"] = round(mz - ptrms.PROTON, 4)
         cands = formula_id.score_peak(
-            mz, drift, obs_ratios=obs_ratios(mz), elements=elements
+            mz,
+            drift,
+            obs_ratios=obs_ratios(mz),
+            elements=elements,
+            compounds_of_interest=compounds_of_interest,
         )
         e["candidates"] = cands
         # normalized top-candidate score / near-isobar ambiguity, surfaced explicitly;
@@ -562,47 +568,126 @@ def annotate_peaks(
             )
         if flags:
             e["likely_artifact"] = flags
-        # A ready-to-use label so you don't hand-format one (and so `unknown`
-        # labels carry a clean 3-dp m/z, not a full-precision float). Override it
-        # when your chemistry judgment differs — it's a default, not a verdict.
+        out.append(e)
+    _assign_suggested_identities(out, assign_all_library=assign_all_library)
+    return drift, out
+
+
+def _assign_suggested_identities(peaks, *, assign_all_library=False):
+    """Choose editable library defaults without assigning one formula family twice.
+
+    The matching favours each peak's ranked candidate order while maximising the number
+    of distinct library-backed assignments. Compounds of interest have already received
+    their score prior and provide the preferred isomer label. Reagent ions are outside
+    the analyte matching, and formula-only unknowns keep their stricter evidence gate.
+    """
+    options = {}
+    for index, peak in enumerate(peaks):
+        existing_label = peak.get("suggested_label")
+        existing_formula = peak.pop("suggested_formula", None)
+        existing_rank = peak.pop("suggested_candidate_rank", None)
         reagent = next(
             (
-                fl.split(": ", 1)[1]
-                for fl in flags
-                if fl.startswith("reagent/cluster: ")
+                flag.split(": ", 1)[1]
+                for flag in peak.get("likely_artifact", [])
+                if flag.startswith("reagent/cluster: ")
             ),
             None,
         )
-        top = cands[0] if cands else None
         if reagent:
-            e["suggested_label"] = reagent
-        elif top and top.get("name") and e.get("id_confidence", 0) >= 0.6:
-            e["suggested_label"] = top["name"]
-        elif (
+            peak["suggested_label"] = reagent
+            continue
+        candidates = peak.get("candidates") or []
+        if not candidates and existing_label:
+            peak["suggested_label"] = existing_label
+            if existing_formula:
+                peak["suggested_formula"] = existing_formula
+            if existing_rank:
+                peak["suggested_candidate_rank"] = existing_rank
+            continue
+        peak["suggested_label"] = f"unknown m/z {peak['mz']:.3f}"
+        known = []
+        for rank, candidate in enumerate(candidates, start=1):
+            label = candidate.get("preferred_name") or candidate.get("name")
+            formula = candidate.get("formula")
+            eligible = assign_all_library or (
+                rank == 1 and peak.get("id_confidence", 0) >= 0.6
+            )
+            if label and formula and eligible:
+                known.append(
+                    {
+                        "formula": formula,
+                        "label": label,
+                        "rank": rank,
+                        "share": candidate.get("probability", 0.0),
+                        "interest": bool(candidate.get("interest_matches")),
+                    }
+                )
+        if known:
+            options[index] = known
+
+    owners = {}
+    assignments = {}
+
+    def place(index, seen):
+        for option in options.get(index, []):
+            key = option["formula"].upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            owner = owners.get(key)
+            if owner is None or place(owner, seen):
+                owners[key] = index
+                assignments[index] = option
+                return True
+        return False
+
+    order = sorted(
+        options,
+        key=lambda index: (
+            -int(options[index][0]["interest"]),
+            -float(options[index][0]["share"]),
+            -float(peaks[index].get("height", 0.0)),
+            float(peaks[index]["mz"]),
+        ),
+    )
+    for index in order:
+        place(index, set())
+
+    for index, option in assignments.items():
+        peaks[index]["suggested_label"] = option["label"]
+        peaks[index]["suggested_formula"] = option["formula"]
+        peaks[index]["suggested_candidate_rank"] = option["rank"]
+
+    fallback_order = sorted(
+        range(len(peaks)),
+        key=lambda index: (
+            -float(peaks[index].get("id_confidence", 0.0)),
+            -float(peaks[index].get("height", 0.0)),
+            float(peaks[index]["mz"]),
+        ),
+    )
+    for index in fallback_order:
+        peak = peaks[index]
+        if index in assignments or not peak["suggested_label"].startswith("unknown m/z"):
+            continue
+        candidates = peak.get("candidates") or []
+        top = candidates[0] if candidates else None
+        if (
             top
             and top.get("formula")
+            and not top.get("name")
+            and top["formula"].upper() not in owners
             and all(ch in "CHNO0123456789" for ch in top["formula"])
             and top["formula"].find("C") == 0
-            and not e.get("id_ambiguous")
-            and len(cands) >= 2
-            and e.get("id_confidence", 0) >= 0.9
+            and not peak.get("id_ambiguous")
+            and len(candidates) >= 2
+            and peak.get("id_confidence", 0) >= 0.9
         ):
-            # A near-certain plain-CHNO composition with no library name: the FORMULA
-            # is the identity — far more useful than a bare "unknown m/z". (A peak
-            # that reads 'unknown' while its Identification card shows one formula at
-            # ~100% confidence should just carry that formula.) Guards, so this only
-            # fires for a solid call: the winner beat rivals (>=2 candidates, at very
-            # low m/z a lone candidate scores 1.0 for nothing), and it contains only
-            # the common breath elements C/H/N/O — a confident halogen/S/P formula at
-            # an off-mass is more likely a calibration artifact, so it stays 'unknown'
-            # for the human to judge (its candidate is still shown in the viz).
-            # Recorded in `suggested_formula` too, so it survives into the config.
-            e["suggested_label"] = top["formula"]
-            e["suggested_formula"] = top["formula"]
-        else:
-            e["suggested_label"] = f"unknown m/z {mz:.3f}"
-        out.append(e)
-    return drift, out
+            peak["suggested_label"] = top["formula"]
+            peak["suggested_formula"] = top["formula"]
+            peak["suggested_candidate_rank"] = 1
+            owners[top["formula"].upper()] = index
 
 
 def _is_noise_artifact(flags):
@@ -636,6 +721,8 @@ def _compact_peak(e):
     }
     if e.get("suggested_formula"):
         out["suggested_formula"] = e["suggested_formula"]
+    if e.get("suggested_candidate_rank"):
+        out["suggested_candidate_rank"] = e["suggested_candidate_rank"]
     if top:
         out["top_candidate"] = {
             "formula": top.get("formula"),
@@ -710,6 +797,7 @@ def cmd_peaks(args):
     n_noise = sum(1 for p in peaks if _is_noise_artifact(p.get("likely_artifact")))
     if not include_art:
         peaks = [p for p in peaks if not _is_noise_artifact(p.get("likely_artifact"))]
+    _assign_suggested_identities(peaks)
     n_amb = sum(1 for p in peaks if p.get("id_ambiguous"))
     n_ovl = sum(1 for p in peaks if p.get("overlap"))
     # near-duplicate 'peak intervals': windows almost on top of each other
@@ -728,15 +816,16 @@ def cmd_peaks(args):
             "uncertainty (unresolved = worse than deconvolved). `name`/`k` are "
             "filled when the formula is in the rate table (else k_estimated). "
             "`iso_pred` vs `iso_obs` = predicted vs observed (M+1,M+2)/M. "
-            "`suggested_label` is a ready-to-use default label. `prominence` is the "
-            "apex's rise above local baseline in cps (real peak ≈ height; noise "
+            "`suggested_label` is an editable, globally unique high-ranked default. "
+            "`prominence` is the apex's rise above local baseline in cps (real "
+            "peak ≈ height; noise "
             "ripple ≈ 0). neutral_mass = mz − proton."
         )
         out_peaks = peaks
     else:
         note = (
             "Compact view (default). Each peak: `suggested_label` (a ready-to-use "
-            "label — drop it into your config's peaks, or override it), "
+            "editable label; automatic library compounds are globally unique), "
             "`top_candidate` (best formula/name/mass-error, chosen by isotope "
             "pattern + plausibility, NOT nearest-mass), `id_confidence` (a normalized "
             "top-candidate score used by conservative gates, not a calibrated "
@@ -883,6 +972,8 @@ def auto_peaks(
     R=None,
     R_phys=None,
     mass_axis=None,
+    compounds_of_interest=None,
+    assign_all_library=False,
 ):
     """Deterministic peak panel for a file: detect, annotate, drop instrument-noise
     artifacts, collapse windows that coincide, and carry the suggested name.
@@ -919,16 +1010,21 @@ def auto_peaks(
         R=R,
         R_phys=R_phys,
         mass_axis=mass_axis,
+        compounds_of_interest=compounds_of_interest,
+        assign_all_library=assign_all_library,
     )
     peaks = [p for p in peaks if not _is_noise_artifact(p.get("likely_artifact"))]
     peaks = _merge_overlapping_windows(peaks, R=R)
+    _assign_suggested_identities(
+        peaks, assign_all_library=assign_all_library
+    )
     out = []
     for p in peaks:
         sl = p.get("suggested_label", "") or ""
         # a real name -> label the channel; an "unknown m/z X" -> leave blank so the
         # CSV shows a clean `m<mz>` (the mass is already the variable name)
         o = {"mz": p["mz"], "label": "" if sl.startswith("unknown m/z") else sl}
-        if p.get("suggested_formula"):  # near-certain composition -> carry it
+        if p.get("suggested_formula"):
             o["formula"] = p["suggested_formula"]
         out.append(o)
     return out
@@ -992,7 +1088,14 @@ def auto_ranges_note(ranges):
     )
 
 
-def _auto_peaks(f, args, R=None, R_phys=None, mass_axis=None):
+def _auto_peaks(
+    f,
+    args,
+    R=None,
+    R_phys=None,
+    mass_axis=None,
+    compounds_of_interest=None,
+):
     """Peaks for the --auto-peaks fallback: detect, annotate, DROP instrument-noise
     artifacts (ringing combs / low-prominence ripples), and carry each peak's
     `suggested_label` so a headless one-shot `analyze` yields a clean, labelled panel
@@ -1009,14 +1112,15 @@ def _auto_peaks(f, args, R=None, R_phys=None, mass_axis=None):
         R=R,
         R_phys=R_phys,
         mass_axis=mass_axis,
+        compounds_of_interest=compounds_of_interest,
     )
 
 
 def _load_peaks(args, f, settings=None, config=None, mass_axis=None):
     if args.peaks_json:
         return json.loads(args.peaks_json)
+    cfg = config
     if args.config:
-        cfg = config
         if cfg is None:
             with open(args.config, encoding="utf-8") as fh:
                 cfg = json.load(fh)
@@ -1031,6 +1135,7 @@ def _load_peaks(args, f, settings=None, config=None, mass_axis=None):
             R=settings["R"],
             R_phys=settings["R_phys"],
             mass_axis=mass_axis,
+            compounds_of_interest=(cfg or {}).get("compounds_of_interest"),
         )
     return None
 

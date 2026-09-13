@@ -620,6 +620,7 @@ def build_viz_data(
         "rate_constants": [
             {
                 "name": c["name"],
+                "isomers": c.get("isomers", []),
                 "formula": c["formula"],
                 "mz": c["mz"],
                 "k": c["k"],
@@ -1699,7 +1700,9 @@ async function hydratePeakPreview(p,lo,hi){ if(!SERVED)return;
 // peak whose label belongs to a different compound than its assigned formula is a
 // mistake to show, not a detail hidden one card away. 'unknown …' plus a formula counts
 // as a contradiction — either the compound is identified or it is not.
-const NAME2F=(()=>{ const m={}; for(const c of DATA.rate_constants){ if(c.name&&c.formula) m[c.name.toLowerCase()]=c.formula.toUpperCase(); } return m; })();
+const NAME2F=(()=>{ const m={}; for(const c of DATA.rate_constants){
+  for(const name of [c.name,...(c.isomers||[])]) if(name&&c.formula) m[name.toLowerCase()]=c.formula.toUpperCase();
+} return m; })();
 const KNOWNF=(()=>{ const s=new Set(); for(const c of DATA.rate_constants){ if(c.formula) s.add(c.formula.toUpperCase()); } return s; })();
 function labelConflict(p){ const f=(p.formula||'').toUpperCase(); if(!f) return null;
   const lab=(p.label||'').trim(); if(!lab) return null;
@@ -2433,8 +2436,11 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
     row.className="cand"+(chosen?" chosen":"");
     const kb=c.k?(" · k="+(+c.k).toFixed(1)+(c.k_estimated?"~":"")):"";
     const matched=(c.interest_matches||[]).map(esc);
+    const preferred=c.preferred_name||c.name;
+    const alternatives=(c.names||[]).filter(name=>name!==preferred);
     row.innerHTML=`<span class="f">${c.formula}</span>`+
-      (c.name?`<span class="cname" title="compound name">${c.name}</span>`:``)+
+      (preferred?`<span class="cname" title="best-guess compound name">${preferred}</span>`:``)+
+      (alternatives.length?`<span class="meta">also: ${alternatives.map(esc).join(', ')}</span>`:``)+
       (matched.length?`<span class="pill">of interest: ${matched.join(', ')}</span>`:``)+
       `<span class="meta">Δ${c.delta_mDa>=0?'+':''}${c.delta_mDa} mDa · DBE ${c.dbe}${kb}</span>`+
       (p.candidates.length===1?'':`<span class="bar"><span style="width:${Math.round(c.probability*100)}%"></span></span>`)+
@@ -2448,12 +2454,13 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
     el.appendChild(n); } }
 function assignCandidate(p,c){
   // guard against assigning the same compound to two peaks (a compound = one m/z)
-  const cf=(c.formula||'').toUpperCase(), cn=(c.name||'').toLowerCase();
+  const preferred=c.preferred_name||c.name||c.formula;
+  const cf=(c.formula||'').toUpperCase(), cn=(preferred||'').toLowerCase();
   const clash=peaks.find(q=>q!==p && q.use && (cf?((q.formula||'').toUpperCase()===cf)
                                                  :(cn&&(q.label||'').toLowerCase()===cn)));
-  if(clash && !confirm((c.name||c.formula)+" is already assigned to m/z "+clash.mz.toFixed(3)+
+  if(clash && !confirm(preferred+" is already assigned to m/z "+clash.mz.toFixed(3)+
       ".\nAssign it here too? (a compound normally appears at only one m/z)")) return;
-  pushUndo(); p.formula=c.formula; p.label=c.name||c.formula;
+  pushUndo(); p.formula=c.formula; p.label=preferred;
   if(c.isotope_model){ p.isotopes={version:c.isotope_model.version,
     monoisotopic_fraction:c.isotope_model.monoisotopic_fraction,
     channels:c.isotope_model.channels.map(ch=>({order:ch.order,mz:p.mz+ch.shift,

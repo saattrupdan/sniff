@@ -362,6 +362,7 @@ def bootstrap_config(
     progress=None,
     should_stop=None,
     template_peaks=None,
+    compounds_of_interest=None,
 ) -> dict:
     """Build a config from the file alone, with no agent and no judgement calls.
 
@@ -371,6 +372,9 @@ def bootstrap_config(
     takes: detection is one call each for peaks and intervals, so it reports at the
     boundaries between them (auto_peaks 0.1 s, auto_ranges 0.8 s on the 2 GB run).
     """
+    compounds_of_interest = formula_id.normalise_compounds_of_interest(
+        compounds_of_interest, strict=False
+    ) or []
 
     def _say(frac):
         if progress is not None:
@@ -383,15 +387,18 @@ def bootstrap_config(
     own = f is None
     supplied_axis = mass_axis is not None
     source = h5py.File(h5_path, "r") if own else f
-    def _detect(function):
-        if not supplied_axis:
-            return function(source)
+
+    def _detect(function, **kwargs):
+        call_kwargs = dict(kwargs)
+        if supplied_axis:
+            call_kwargs["mass_axis"] = mass_axis
         try:
-            return function(source, mass_axis=mass_axis)
+            return function(source, **call_kwargs)
         except TypeError as exc:
-            # Preserve compatibility with callers that replace the detector with a
-            # one-argument test double; real detectors accept the threaded axis.
-            if "mass_axis" not in str(exc):
+            # Preserve compatibility with callers that replace a detector with a
+            # one-argument test double; production detectors accept these keywords.
+            unsupported = [name for name in call_kwargs if name in str(exc)]
+            if not unsupported:
                 raise
             return function(source)
 
@@ -403,7 +410,10 @@ def bootstrap_config(
             )
         else:
             ptrms.validate_mass_axis(mass_axis)
-        peaks = _detect(auto_peaks)
+        peak_options = {"assign_all_library": True}
+        if compounds_of_interest:
+            peak_options["compounds_of_interest"] = compounds_of_interest
+        peaks = _detect(auto_peaks, **peak_options)
         adaptation = None
         if template_peaks is not None:
             peaks, adaptation = panel.adapt_peak_table(template_peaks, peaks)
@@ -434,6 +444,11 @@ def bootstrap_config(
         "mass_axis_domain": ptrms.MASS_AXIS_CONFIG_DOMAIN,
         "mass_axis_version": ptrms.MASS_AXIS_CONFIG_VERSION,
         "mass_axis_calibration": mass_axis.to_dict(),
+        **(
+            {"compounds_of_interest": compounds_of_interest}
+            if compounds_of_interest
+            else {}
+        ),
         "diagnostics": {
             "n_peaks": len(peaks),
             "n_ranges": len(ranges),
@@ -689,6 +704,7 @@ class Session:
                     progress=self._band(P_CAL, P_DETECT),
                     should_stop=self._cancel.is_set,
                     template_peaks=template_peaks,
+                    compounds_of_interest=compounds_of_interest,
                 )
                 self._halt()  # a cancel must not leave a half-made config on disk
                 config = _with_mass_axis_cache(config, mass_axis, fingerprint)

@@ -19,7 +19,7 @@ import h5py
 import numpy as np
 from calibration_helpers import identity_mass_axis
 
-from sniff import formula_id, ptrms, viz
+from sniff import analyze, formula_id, ptrms, viz
 
 
 def _candidate(formula: str, name: str) -> dict:
@@ -101,6 +101,27 @@ class ContextualPriorTest(unittest.TestCase):
         self.assertEqual(scored[0]["probability"], 0.667)
         self.assertEqual(scored[1]["probability"], 0.333)
 
+    def test_selected_isomer_becomes_the_preferred_editable_name(self):
+        neutral_mass = 50.0
+        with (
+            mock.patch.object(
+                formula_id,
+                "enumerate_formulas",
+                return_value=[({"C": 3, "H": 6, "O": 1}, neutral_mass)],
+            ),
+            mock.patch.object(formula_id, "_prior", return_value=1.0),
+        ):
+            candidate = formula_id.score_peak(
+                neutral_mass + formula_id.PROTON,
+                1.0,
+                compounds_of_interest=["propanal"],
+            )[0]
+
+        self.assertEqual(candidate["name"], "acetone")
+        self.assertEqual(candidate["preferred_name"], "propanal")
+        self.assertIn("acetone", candidate["names"])
+        self.assertIn("propanal", candidate["names"])
+
 
 def _payload(peaks_cfg, candidates=None):
     """Build a review payload for `peaks_cfg` from a tiny synthetic file."""
@@ -146,6 +167,166 @@ def _payload(peaks_cfg, candidates=None):
                     {"label": "sample_02", "start": 2, "end": 2, "class": "sample"},
                 ],
             )
+
+
+class AutomaticAssignmentTest(unittest.TestCase):
+    def test_library_candidates_fill_ambiguous_peaks_with_formulas(self):
+        peaks = [
+            {
+                "mz": 59.049,
+                "height": 20.0,
+                "id_confidence": 0.45,
+                "id_ambiguous": True,
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "preferred_name": "propanal",
+                        "probability": 0.45,
+                        "interest_matches": ["propanal"],
+                    }
+                ],
+            }
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertEqual(peaks[0]["suggested_label"], "propanal")
+        self.assertEqual(peaks[0]["suggested_formula"], "C3H6O")
+        self.assertEqual(peaks[0]["suggested_candidate_rank"], 1)
+
+    def test_global_matching_uses_distinct_fallback_compounds(self):
+        peaks = [
+            {
+                "mz": 50.0,
+                "height": 10.0,
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "probability": 0.7,
+                    },
+                    {
+                        "formula": "C4H8",
+                        "name": "butene",
+                        "probability": 0.3,
+                    },
+                ],
+            },
+            {
+                "mz": 51.0,
+                "height": 20.0,
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "probability": 1.0,
+                    }
+                ],
+            },
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertEqual(
+            [(peak["suggested_label"], peak["suggested_formula"]) for peak in peaks],
+            [("butene", "C4H8"), ("acetone", "C3H6O")],
+        )
+        self.assertEqual(peaks[0]["suggested_candidate_rank"], 2)
+
+    def test_duplicate_without_fallback_is_left_unassigned(self):
+        candidate = {
+            "formula": "C3H6O",
+            "name": "acetone",
+            "probability": 1.0,
+        }
+        peaks = [
+            {"mz": 59.048, "height": 5.0, "candidates": [candidate]},
+            {"mz": 59.049, "height": 20.0, "candidates": [candidate]},
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertEqual(peaks[1]["suggested_label"], "acetone")
+        self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
+        self.assertNotIn("suggested_formula", peaks[0])
+
+    def test_named_duplicate_cannot_reenter_as_a_formula_only_assignment(self):
+        candidates = [
+            {
+                "formula": "C3H6O",
+                "name": "acetone",
+                "probability": 0.95,
+            },
+            {"formula": "C3H8", "name": None, "probability": 0.05},
+        ]
+        peaks = [
+            {
+                "mz": 59.048,
+                "height": 5.0,
+                "id_confidence": 0.95,
+                "candidates": candidates,
+            },
+            {
+                "mz": 59.049,
+                "height": 20.0,
+                "id_confidence": 0.95,
+                "candidates": candidates,
+            },
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertEqual(peaks[1]["suggested_formula"], "C3H6O")
+        self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
+        self.assertNotIn("suggested_formula", peaks[0])
+
+    def test_formula_only_fallback_is_globally_unique(self):
+        candidates = [
+            {"formula": "C3H8", "name": None, "probability": 0.95},
+            {"formula": "C2H6O", "name": None, "probability": 0.05},
+        ]
+        peaks = [
+            {
+                "mz": 45.0,
+                "height": 5.0,
+                "id_confidence": 0.95,
+                "candidates": candidates,
+            },
+            {
+                "mz": 45.001,
+                "height": 20.0,
+                "id_confidence": 0.95,
+                "candidates": candidates,
+            },
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
+        self.assertNotIn("suggested_formula", peaks[0])
+        self.assertEqual(peaks[1]["suggested_formula"], "C3H8")
+
+    def test_headless_default_keeps_a_low_share_library_match_unassigned(self):
+        peaks = [
+            {
+                "mz": 59.049,
+                "id_confidence": 0.45,
+                "id_ambiguous": True,
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "probability": 0.45,
+                    }
+                ],
+            }
+        ]
+
+        analyze._assign_suggested_identities(peaks)
+
+        self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
+        self.assertNotIn("suggested_formula", peaks[0])
 
 
 class ReviewPayloadTest(unittest.TestCase):
