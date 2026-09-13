@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from . import brand, formula_id, ptrms
+from . import brand, catalogue, formula_id, ptrms
 
 logger = logging.getLogger(__name__)
 
@@ -157,9 +157,15 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
             _window_sum(apex + formula_id.DM1) / parent,
             _window_sum(apex + formula_id.DM2) / parent,
         )
-    candidates = formula_id.score_peak(
+    local_candidates = formula_id.score_peak(
         apex,
         1.0,
+        obs_ratios=observed,
+        compounds_of_interest=compounds_of_interest,
+    )
+    candidates = catalogue.CompoundCatalogue().score_peak(
+        apex,
+        candidates=local_candidates,
         obs_ratios=observed,
         compounds_of_interest=compounds_of_interest,
     )
@@ -167,7 +173,20 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
         candidate["isotope_model"] = ptrms.isotopes.formula_isotope_model(
             candidate["formula"]
         )
-    return {"apex": round(apex, 5), "candidates": candidates}
+    preview = {
+        "mz": round(apex, 5),
+        "apex": round(apex, 5),
+        "height": parent,
+        "candidates": candidates,
+    }
+    from .analyze import interpret_peak_roles
+
+    interpret_peak_roles([preview])
+    return {
+        "apex": preview["apex"],
+        "candidates": candidates,
+        "interpretation_candidates": preview.get("interpretation_candidates", []),
+    }
 
 
 def _validate_embedded_absolute_axis(payload):
@@ -203,6 +222,11 @@ def _apply_refined_identity_defaults(peaks, peaks_cfg):
     options = {}
     for index, peak in enumerate(peaks):
         if "labelAuto" not in peak:
+            continue
+        if any(
+            item.get("exclude_from_analyte_assignment")
+            for item in peak.get("interpretation_candidates", [])
+        ):
             continue
         identity_options = []
         for rank, candidate in enumerate(peak.get("candidates") or [], start=1):
@@ -277,6 +301,7 @@ def build_viz_data(
     compounds_of_interest = formula_id.normalise_compounds_of_interest(
         (config_base or {}).get("compounds_of_interest"), strict=False
     ) or []
+    compound_catalogue = catalogue.CompoundCatalogue()
     analysis_settings = analysis_settings or {
         "R": R,
         "R_phys": R_phys,
@@ -477,10 +502,18 @@ def build_viz_data(
         win_manual = p.get("window") is not None
         winL, winR = _winlr(p) if win_manual else (apex / (2.0 * R), apex / (2.0 * R))
         # scored formula candidates + isotope evidence for the review UI
-        cands = formula_id.score_peak(
+        observed_isotopes = obs_ratios(apex)
+        local_candidates = formula_id.score_peak(
             apex,
             drift,
-            obs_ratios=obs_ratios(apex),
+            obs_ratios=observed_isotopes,
+            compounds_of_interest=compounds_of_interest,
+        )
+        cands = compound_catalogue.score_peak(
+            apex,
+            drift=drift,
+            candidates=local_candidates,
+            obs_ratios=observed_isotopes,
             compounds_of_interest=compounds_of_interest,
         )
         for candidate in cands:
@@ -547,6 +580,16 @@ def build_viz_data(
                 # path drops it again so an untouched peak stays unnamed in the file
                 **({} if name else {"labelAuto": f"m{m:.3f}"}),
                 "formula": p.get("formula", ""),
+                **(
+                    {"catalogue": compound_catalogue.lookup_formula(p["formula"])}
+                    if p.get("formula")
+                    else {}
+                ),
+                **(
+                    {"identification_provenance": dict(p["identification_provenance"])}
+                    if isinstance(p.get("identification_provenance"), dict)
+                    else {}
+                ),
                 # which sample intervals this compound is part of; null means every
                 # sample interval, which is what pre-sample-specific configs meant
                 "samples": list(p["samples"])
@@ -581,6 +624,9 @@ def build_viz_data(
                 ),
             }
         )
+    from .analyze import interpret_peak_roles
+
+    interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
     if assign_identity_defaults:
         _apply_refined_identity_defaults(peaks, peaks_cfg)
     _say(1.0)
@@ -615,6 +661,8 @@ def build_viz_data(
             "mass_scale": mass_axis.scale,
             "mass_offset": mass_axis.offset,
             "mass_axis_calibration": mass_axis.to_dict(),
+            "identity_mass_drift": drift,
+            "fresh_review": bool(assign_identity_defaults),
             "R": R,
             "R_phys": R_phys,
             "primary_mz": primary_mz,
@@ -781,6 +829,26 @@ def serve(
 
         def _json(self, obj):
             self._send(200, json.dumps(obj).encode("utf-8"), "application/json")
+
+        def _same_origin(self):
+            expected_host = f"127.0.0.1:{self.server.server_address[1]}"
+            if self.headers.get("Host") != expected_host:
+                return False
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return False
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            try:
+                parsed = urlparse(origin)
+                port = parsed.port
+            except ValueError:
+                return False
+            return (
+                parsed.scheme == "http"
+                and parsed.hostname == "127.0.0.1"
+                and port == self.server.server_address[1]
+            )
 
         def do_GET(self):
             if self.path in ("/", "/index.html"):
@@ -1081,6 +1149,11 @@ _TEMPLATE = r"""<!DOCTYPE html>
   .cand .p{min-width:38px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
   .cand .ev{color:var(--mut);font-size:11px;min-width:172px;text-align:right;font-variant-numeric:tabular-nums}
   .cand .ok{color:var(--ok)} .cand .bad{color:#f87171}
+  .cataloguebox{padding:7px 9px;margin:-2px 0 7px 20px;border-left:2px solid var(--acc);
+           color:var(--mut);font-size:11px;line-height:1.5}
+  .cataloguebox b{color:var(--fg)} .cataloguerow{display:flex;align-items:center;gap:7px;margin-top:4px}
+  .cataloguerow a{color:var(--acc2);text-decoration:none}.cataloguerow a:hover{text-decoration:underline}
+  .cataloguerow button{padding:2px 7px;font-size:10.5px;background:transparent;color:var(--fg)}
   .idnote{padding:7px 9px;margin-bottom:8px;border:1px solid var(--line2);border-radius:8px;
           color:var(--mut);font-size:11px;line-height:1.45}
   .idnote b{color:var(--fg)}
@@ -1745,7 +1818,9 @@ async function hydratePeakPreview(p,lo,hi){ if(!SERVED)return;
       selId=duplicate.id; renderPeaks(); jumpToPeak(duplicate); scheduleSave(); return; }
     p.mz=+data.apex; p.apex=+data.apex; p._apex0=+data.apex;
     p.label='unknown m/z '+p.apex.toFixed(3); p.labelAuto=p.label;
-    p.candidates=data.candidates||[]; p.id_confidence=p.candidates.length?p.candidates[0].probability:null;
+    p.candidates=data.candidates||[];
+    p.interpretation_candidates=data.interpretation_candidates||[];
+    p.id_confidence=p.candidates.length?p.candidates[0].probability:null;
     p.id_ambiguous=!!(p.candidates.length&&(p.candidates[0].probability<.6||
       (p.candidates.length>1&&p.candidates[0].probability-p.candidates[1].probability<.2)));
     renderPeaks(); redraw(); scheduleSave();
@@ -2245,6 +2320,24 @@ function selectPeak(p){
   const changed=selId!==p.id; selId=p.id;
   if(changed) renderPeaks();                          // don't re-render on re-click, so a label stays editable
   if(tab==="spec") jumpToPeak(p); else drawMain(); }
+function appendCatalogue(el,p,c,species){
+  if(!species||!species.length) return;
+  const box=document.createElement("div"); box.className="cataloguebox";
+  const title=document.createElement("b"); title.textContent="Bundled catalogue proposals";
+  box.appendChild(title);
+  const note=document.createTextNode(" — NIST WebBook names, not PTR-MS proof");
+  box.appendChild(note);
+  species.forEach(speciesItem=>{ const line=document.createElement("div"); line.className="cataloguerow";
+    const link=document.createElement("a"); link.href=speciesItem.url; link.target="_blank";
+    link.rel="noopener noreferrer"; link.textContent=speciesItem.name; line.appendChild(link);
+    const metadata=[speciesItem.cas,speciesItem.inchi_key].filter(Boolean).join(" · ");
+    if(metadata){ const detail=document.createElement("span"); detail.textContent=metadata; line.appendChild(detail); }
+    const use=document.createElement("button"); use.type="button"; use.textContent="Use name";
+    use.onclick=event=>{ event.stopPropagation(); assignCandidate(p,{...(c||{}),
+      formula:(c&&c.formula)||p.formula||speciesItem.formula,preferred_name:speciesItem.name,
+      catalogue_selected:speciesItem}); }; line.appendChild(use); box.appendChild(line); });
+  el.appendChild(box);
+}
 function peakDisplayMz(p){ return dispApex(p); }
 function peakSpectrumIntegral(p){
   const [wl,wr]=windowTB(peakDisplayMz(p),p.winL,p.winR);
@@ -2394,7 +2487,14 @@ function renderPeaks(){ const box=document.getElementById("peaksbody"); if(!box)
       pushUndo(); toggleSel(p,r); renderPeaks(); redraw(); }; });
     const lbl=li.querySelector("[data-a=label]");
     lbl.onclick=()=>selectPeak(p);                                   // clicking the label selects (no re-render if already selected)
-    lbl.onchange=()=>{ pushUndo(); p.label=lbl.value; renderPeaks(); redraw(); };
+    lbl.onchange=()=>{ pushUndo(); p.label=lbl.value;
+      if(p.identification_provenance){
+        p.identification_provenance={...p.identification_provenance,label_source:"manual"};
+        delete p.identification_provenance.nist_id; delete p.identification_provenance.url;
+        if(p.identification_provenance.formula_source!=="nist-webbook-mass")
+          delete p.identification_provenance.provider;
+      }
+      renderPeaks(); redraw(); };
     const del=li.querySelector("[data-a=del]"); if(del) del.onclick=e=>{ e.stopPropagation(); deletePeak(p); };
     ul.appendChild(li); }
   box.appendChild(ul);
@@ -2448,7 +2548,12 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
     ? rawInterests.filter(c=>c&&typeof c.name==='string'):[];
   const priorText=interests.length
     ? ` The ${interests.length} user-selected compound${interests.length===1?'':'s'} of interest provide a modest contextual ranking prior; this is not evidence that they are present.`:'';
-  const provenance='<div class="idnote"><b>Evidence:</b> candidates are inferred from measured exact mass, isotope evidence, and chemistry plausibility.'+priorText+' Names and isomer labels come from the bundled PTR Library mapping; formula ranking cannot determine structural isomers.</div>';
+  const savedSource=p&&p.identification_provenance
+    ? ' <b>Saved source:</b> formula '+esc(p.identification_provenance.formula_source||'unknown')+
+      '; label '+esc(p.identification_provenance.label_source||'unknown')+
+      (p.identification_provenance.nist_id?' ('+esc(p.identification_provenance.nist_id)+')':'')+'.'
+    : '';
+  const provenance='<div class="idnote"><b>Evidence:</b> candidates are inferred from measured exact mass, isotope evidence, and chemistry plausibility.'+priorText+' Bundled PTR Library names carry PTR-specific evidence. Bundled NIST WebBook names are external catalogue proposals; formula ranking cannot determine structural isomers.'+savedSource+'</div>';
   const fitModel=((DATA.meta||{}).peak_fit||{}).model||'gaussian-v1';
   const fitStatus=p&&p.fit?(p.fit.status||'unknown'):null;
   const clusterNote=p&&p.clustered
@@ -2456,6 +2561,11 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
     : '';
   const isotopeNote=p&&p.isotopes
     ? '<div class="idnote"><b>Natural isotopes:</b> '+p.isotopes.channels.map(ch=>'M+'+ch.order+' '+(+ch.mz).toFixed(4)+' expected '+pct(ch.ratio_expected)+(ch.ratio_observed==null?' · '+ch.status:' / observed '+pct(ch.ratio_observed))).join('<br>')+'<br>Monoisotopic fraction '+pct(p.isotopes.monoisotopic_fraction)+'. Isotope agreement supports the formula but does not prove identity.</div>'
+    : '';
+  const interpretationNote=p&&(p.interpretation_candidates||[]).length
+    ? '<div class="idnote warn"><b>Interpretation candidates:</b> '+p.interpretation_candidates.map(item=>
+        esc(item.label)+' — '+esc((item.evidence||[]).join('; '))).join('<br>')+
+      '<br>These explain non-analyte or unresolved channels; they are not compound identifications.</div>'
     : '';
   const nameConf=p?labelConflict(p):null;
   const confNote=nameConf?'<div class="idnote warn" style="margin-bottom:8px"><b>Name and formula disagree:</b> '+esc(nameConf)+'.</div>':'';
@@ -2472,19 +2582,21 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
       // a compound with an assigned formula is not 'unknown': show the formula, and
       // only add a name when the label actually carries one
       const showName=p.formula&&!/^unknown\b/i.test(p.label||'')?p.label:(p.formula?'':p.label);
-      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+'<div class="cand chosen"><span class="f">'+esc(p.formula||p.label)+'</span>'+
+      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+interpretationNote+
+        '<div class="cand chosen"><span class="f">'+esc(p.formula||p.label)+'</span>'+
         (showName?'<span class="cname">'+esc(showName)+'</span>':'')+
         '<span class="meta">'+(assigned?'current formula assignment':'label only; not formula-assigned')+'</span></div>'+
-        '<div class="idnote" style="margin-top:8px">No plausible protonated-neutral formula fits this m/z within the exact-mass tolerance. It may be a reagent/inorganic ion, isotope, fragment, unresolved interference, noise peak, or mass-calibration mismatch. The existing '+(assigned?'formula assignment':'label')+' is kept as-is.</div>';
+        '<div class="idnote" style="margin-top:8px">No locally generated protonated-neutral formula fits this m/z within the exact-mass tolerance. It may be a reagent/inorganic ion, isotope, fragment, unresolved interference, noise peak, or mass-calibration mismatch. The existing '+(assigned?'formula assignment':'label')+' is kept as-is.</div>';
     } else {
-      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+'<div class="mut">No plausible protonated-neutral formula fits this m/z within the exact-mass tolerance. It may be a reagent/inorganic ion, isotope, fragment, unresolved interference, noise peak, or mass-calibration mismatch.</div>';
+      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+interpretationNote+'<div class="mut">No plausible protonated-neutral formula fits this m/z within 12 mDa. Use the interpretation above rather than inventing an analyte.</div>';
     }
+    appendCatalogue(el,p,null,p.catalogue||[]);
     return; }
   if(conf) conf.innerHTML=status+` <span class="mut">· ${p.candidates.length===1
     ? 'only generated formula candidate — not a confidence estimate'
     : 'relative candidate score/share (not identification confidence)'}</span>`+
     (p.id_ambiguous?' <span class="pill hi">ambiguous</span>':'');
-  el.innerHTML=provenance+confNote+clusterNote+isotopeNote;
+  el.innerHTML=provenance+confNote+clusterNote+isotopeNote+interpretationNote;
   p.candidates.forEach(c=>{ const row=document.createElement("div");
     const chosen=!!(p.formula&&c.formula===p.formula);
     row.className="cand"+(chosen?" chosen":"");
@@ -2500,7 +2612,8 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
       (p.candidates.length===1?'':`<span class="bar"><span style="width:${Math.round(c.probability*100)}%"></span></span>`)+
       `<span class="p">${p.candidates.length===1?'only candidate':Math.round(c.probability*100)+'% share'}</span>`+
       `<span class="ev">${evText(c)}</span>`;
-    row.onclick=()=>assignCandidate(p,c); el.appendChild(row); });
+    row.onclick=()=>assignCandidate(p,c); el.appendChild(row);
+    appendCatalogue(el,p,c,c.catalogue||[]); });
   if(p.overlap){ const n=document.createElement("div"); n.className="idnote warn"; n.style.marginTop="8px";
     n.textContent=(p.overlap.level==="unresolved"
       ? "⚠ Unresolved overlap with m/z "+p.overlap.neighbor+" ("+p.overlap.sep_mDa+" mDa) — closer than the instrument resolution, so this peak's Raw is unreliable even after deconvolution."
@@ -2519,7 +2632,18 @@ function assignCandidate(p,c){
     monoisotopic_fraction:c.isotope_model.monoisotopic_fraction,
     channels:c.isotope_model.channels.map(ch=>({order:ch.order,mz:p.mz+ch.shift,
       ratio_expected:ch.ratio,ratio_observed:null,status:'stale until Done/Export'}))}; }
-  if(c.k) p.k=c.k; p.k_estimated=!!c.k_estimated; if(c.flags) p.flags=c.flags; renderPeaks(); redraw(); }
+  if(c.k) p.k=c.k; p.k_estimated=!!c.k_estimated; if(c.flags) p.flags=c.flags;
+  if(c.catalogue_selected){ p.identification_provenance={automatic:false,
+    formula_source:c.formula_source||"local-enumeration",label_source:"compound-catalogue",
+    provider:"bundled NIST Chemistry WebBook catalogue",
+    nist_id:c.catalogue_selected.nist_id,url:c.catalogue_selected.url};
+  } else if(c.formula_source==="compound-catalogue"){
+    p.identification_provenance={automatic:false,formula_source:"compound-catalogue",
+      label_source:(c.preferred_name||c.name)?"bundled-ptr-library":"formula",
+      provider:"bundled NIST Chemistry WebBook catalogue",
+      nist_ids:(c.catalogue||[]).map(item=>item.nist_id)};
+  } else delete p.identification_provenance;
+  renderPeaks(); redraw(); }
 let _lastScrolledRange=null;
 function renderRanges(){ const tb=document.querySelector("#rngtbl tbody"); if(!tb) return; tb.innerHTML="";
   for(const k in _rngRow) delete _rngRow[k];
@@ -2583,6 +2707,9 @@ function buildConfig(){
       label:(p.labelAuto!==undefined && p.label===p.labelAuto) ? "" : p.label};
     delete o._config_original; delete o.id; delete o.use;
     if(p.formula)o.formula=p.formula; else delete o.formula;
+    if(p.identification_provenance)
+      o.identification_provenance={...p.identification_provenance};
+    else delete o.identification_provenance;
     if(p.k!=null && p.k!==""){o.k=p.k; o.k_estimated=!!p.k_estimated;}
     else { delete o.k; delete o.k_estimated; }
     const k=sampleLabels(), sel=selectedSamples(p);   // all samples is the implicit default, as in older configs

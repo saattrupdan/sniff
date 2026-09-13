@@ -9,7 +9,7 @@ from importlib import resources
 from io import StringIO
 from unittest import mock
 
-from sniff import analyze, ptrms, viz
+from sniff import analyze, catalogue, ptrms, viz
 
 
 class _SingleArgumentTraversable:
@@ -40,8 +40,17 @@ class PackageSmokeTest(unittest.TestCase):
             .joinpath("reference")
             .joinpath("ptrlibrary.csv")
         )
+        compounds = (
+            resources.files("sniff")
+            .joinpath("reference")
+            .joinpath("compound_catalogue.sqlite3")
+        )
         self.assertTrue(rate_constants.is_file())
         self.assertTrue(library.is_file())
+        self.assertTrue(compounds.is_file())
+        self.assertGreater(
+            int(catalogue.CompoundCatalogue().metadata()["species_count"]), 10_900
+        )
         table = ptrms.load_rate_constants()
         self.assertIsNotNone(table)
         self.assertGreater(len(table["compounds"]), 100)

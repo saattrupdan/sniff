@@ -23,7 +23,12 @@ sniff = "sniff.analyze:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-sniff = ["reference/*.json", "reference/*.csv", "reference/*.md"]
+sniff = [
+    "reference/*.json",
+    "reference/*.csv",
+    "reference/*.md",
+    "reference/*.sqlite3",
+]
 
 [dependency-groups]
 dev = [

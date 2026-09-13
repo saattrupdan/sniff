@@ -9,7 +9,7 @@ result is a config file on disk, which is what the UI then edits.
 
 Measurement files stay local: they are read and written in place. Network access is
 limited to the optional agent endpoint a user supplied and a metadata-only GitHub
-Release check on startup.
+Release check on startup. Compound-catalogue queries use the bundled offline database.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -993,7 +994,7 @@ class Session:
         self._save_version = None
         with self._page_condition:
             self._page_counter += 1
-            token = str(self._page_counter)
+            token = f"{self._page_counter}-{secrets.token_urlsafe(24)}"
             self._current_page = token
             self._closed_pages.clear()
             return token
@@ -2051,6 +2052,11 @@ def make_server(port=8765, agent_url=None, agent_timeout=300.0):
                 self.wfile.write(body)
 
         def _same_origin(self):
+            expected_host = f"127.0.0.1:{self.server.server_address[1]}"
+            if self.headers.get("Host") != expected_host:
+                return False
+            if self.headers.get("Sec-Fetch-Site") == "cross-site":
+                return False
             origin = self.headers.get("Origin")
             if not origin:
                 return True

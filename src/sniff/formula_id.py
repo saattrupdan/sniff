@@ -14,10 +14,10 @@ the candidates using three independent lines of evidence:
   3. plausibility       - integer DBE >= 0, the nitrogen rule, and Kind-Fiehn
                           element-ratio "golden rules".
 
-No network, no licensed database: the candidate space is generated on the fly.
-Human names + measured proton-transfer rate constants are attached from
-reference/rate_constants.json when a formula is known; otherwise the formula
-stands on its own with an estimated k.
+The core candidate space is generated locally. A separate read-only catalogue may add
+locally revalidated formulae within the same exact-mass window. PTR-specific names and
+measured proton-transfer rate constants are attached from reference/rate_constants.json
+when a formula is known; otherwise the formula stands on its own with an estimated k.
 """
 
 from __future__ import annotations
@@ -341,6 +341,8 @@ def score_peak(
     max_candidates=5,
     elements=None,
     compounds_of_interest=None,
+    extra_formulas=None,
+    enumerate_candidates=True,
 ):
     """Rank candidate formulas for a detected product ion at m/z.
 
@@ -362,7 +364,28 @@ def score_peak(
         interest_by_formula.setdefault(formula, []).append(name)
     neutral = mz / drift - PROTON
     tol = tol_mDa / 1000.0
-    cands = enumerate_formulas(neutral, tol, elements=elements)
+    cands = (
+        enumerate_formulas(neutral, tol, elements=elements)
+        if enumerate_candidates
+        else []
+    )
+    external_formulas = set()
+    known_formulas = {formula_str(counts) for counts, _mass in cands}
+    for external_formula in extra_formulas or []:
+        try:
+            counts = isotopes.parse_formula(external_formula)
+        except ValueError:
+            continue
+        formula = formula_str(counts)
+        mass = formula_mass(counts)
+        if (
+            formula not in known_formulas
+            and abs(mass - neutral) <= tol
+            and _plausible(counts)
+        ):
+            cands.append((counts, mass))
+            known_formulas.add(formula)
+            external_formulas.add(formula)
     if not cands:
         return []
     scored = []
@@ -425,6 +448,11 @@ def score_peak(
                 **(
                     {"interest_matches": interest_matches}
                     if interest_matches
+                    else {}
+                ),
+                **(
+                    {"formula_source": "compound-catalogue"}
+                    if formula in external_formulas
                     else {}
                 ),
                 "score": score,

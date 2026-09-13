@@ -626,13 +626,20 @@ def test_a_second_export_cannot_report_the_previous_one(tmp_path):
 # --------------------------------------------------------------------------
 # the routes
 # --------------------------------------------------------------------------
+def _review_token(page):
+    match = re.search(rb'const PAGE_TOKEN = "([^"]+)"', page)
+    assert match is not None
+    return match.group(1).decode("ascii")
+
+
 class _Server:
     def __init__(self, base):
         self.base = base
 
-    def get(self, path):
-        with urllib.request.urlopen(self.base + path, timeout=10) as r:
-            return r.status, r.read()
+    def get(self, path, headers=None):
+        request = urllib.request.Request(self.base + path, headers=headers or {})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, response.read()
 
     def post(self, path, body=None):
         data = json.dumps(body or {}).encode("utf-8")
@@ -965,18 +972,21 @@ def test_review_page_is_rendered_in_app_mode(server, tmp_path, monkeypatch):
     assert status == 200
     assert b"const APPMODE = true" in html  # Export, not Done
     assert b"const AUTO_TOUR = true" in html
-    assert b'const PAGE_TOKEN = "1"' in html
+    first_token = _review_token(html)
+    assert first_token.startswith("1-") and len(first_token) > 20
     assert b"Open another file" in html
     # Merely rendering the page does not consume a tour that has not appeared yet.
     _, refreshed = api.get("/review")
     assert b"const AUTO_TOUR = true" in refreshed
-    assert b'const PAGE_TOKEN = "2"' in refreshed
+    second_token = _review_token(refreshed)
+    assert second_token.startswith("2-") and second_token != first_token
 
     code, _ = api.post("/onboarding", {})
     assert code == 200
     _, acknowledged = api.get("/review")
     assert b"const AUTO_TOUR = false" in acknowledged
-    assert b'const PAGE_TOKEN = "3"' in acknowledged
+    third_token = _review_token(acknowledged)
+    assert third_token.startswith("3-") and third_token not in {first_token, second_token}
 
 
 def test_review_render_cannot_mix_payload_and_target_across_an_open(
@@ -1004,8 +1014,10 @@ def test_review_render_cannot_mix_payload_and_target_across_an_open(
     ):
         api.post("/open", {"path": str(first)})
         _wait_ready(api)
-        assert b'const PAGE_TOKEN = "1"' in api.get("/review")[1]
-        session.finish_close_save("1")
+        first_page = api.get("/review")[1]
+        first_token = _review_token(first_page)
+        assert first_token.startswith("1-")
+        session.finish_close_save(first_token)
         payload_captured = threading.Event()
         release_render = threading.Event()
         real_review_payload = session.review_payload
@@ -1038,7 +1050,7 @@ def test_review_render_cannot_mix_payload_and_target_across_an_open(
 
     assert b'second.h5' in current
     assert str(tmp_path / "second.json").encode("utf-8") in current
-    assert b'const PAGE_TOKEN = "2"' in current
+    assert _review_token(current).startswith("2-")
 
 
 def test_save_reload_and_close_preserve_the_latest_config(server, tmp_path):
@@ -1063,21 +1075,29 @@ def test_save_reload_and_close_preserve_the_latest_config(server, tmp_path):
         api.post("/open", {"path": str(h5)})
         _wait_ready(api)
         _, first = api.get("/review")
-        assert b'const PAGE_TOKEN = "1"' in first
+        first_token = _review_token(first)
+        assert first_token.startswith("1-")
         edited = {
             "peaks": [{"mz": 42.0, "label": "reloaded edit"}],
             "ranges": [],
             "mass_axis_domain": "corrected",
             "mass_axis_version": 1,
         }
-        assert api.post("/save?version=10&page=1&closing=1", edited)[0] == 200
+        assert api.post(
+            f"/save?version=10&page={first_token}&closing=1", edited
+        )[0] == 200
         _, refreshed = api.get("/review")
 
-    assert b'const PAGE_TOKEN = "2"' in refreshed
+    second_token = _review_token(refreshed)
+    assert second_token.startswith("2-") and second_token != first_token
     assert b"reloaded edit" in refreshed
     stale = {**edited, "peaks": [{"mz": 1.0, "label": "stale"}]}
-    assert api.post("/save?version=99&page=1&closing=1", stale)[0] == 409
-    assert api.post("/save?version=11&page=2&closing=1", edited)[0] == 200
+    assert api.post(
+        f"/save?version=99&page={first_token}&closing=1", stale
+    )[0] == 409
+    assert api.post(
+        f"/save?version=11&page={second_token}&closing=1", edited
+    )[0] == 200
     saved = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
     assert {key: saved[key] for key in edited} == edited
     assert saved["mass_axis_calibration"]["applied"] is True
@@ -1100,11 +1120,13 @@ def test_stale_page_cannot_write_or_export_a_newly_opened_file(
         api.post("/open", {"path": str(first)})
         _wait_ready(api)
         _, first_page = api.get("/review")
-        assert b'const PAGE_TOKEN = "1"' in first_page
+        first_token = _review_token(first_page)
+        assert first_token.startswith("1-")
         api.post("/open", {"path": str(second)})
         _wait_ready(api)
         _, second_page = api.get("/review")
-        assert b'const PAGE_TOKEN = "2"' in second_page
+        second_token = _review_token(second_page)
+        assert second_token.startswith("2-") and second_token != first_token
 
     second_config = tmp_path / "second.json"
     before = json.loads(second_config.read_text(encoding="utf-8"))
@@ -1116,8 +1138,10 @@ def test_stale_page_cannot_write_or_export_a_newly_opened_file(
     }
     analysed = mock.Mock()
     monkeypatch.setattr(app, "analyze_config_to_csv", analysed)
-    assert api.post("/save?version=999&page=1&closing=1", stale)[0] == 409
-    assert api.post("/export?version=1000&page=1", stale)[0] == 409
+    assert api.post(
+        f"/save?version=999&page={first_token}&closing=1", stale
+    )[0] == 409
+    assert api.post(f"/export?version=1000&page={first_token}", stale)[0] == 409
     assert json.loads(second_config.read_text(encoding="utf-8")) == before
     analysed.assert_not_called()
 
@@ -2184,3 +2208,6 @@ def test_review_offers_explicit_table_adaptation_and_peak_preview():
     assert "Use table on another file" in page
     assert "adapt_peaks:cfg.peaks" in page
     assert "'/peak-preview?lo='" in page
+    assert '"/nist-webbook?mz="' not in page
+    assert "Bundled catalogue proposals" in page
+    assert "NIST WebBook names, not PTR-MS proof" in page

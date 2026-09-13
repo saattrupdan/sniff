@@ -41,13 +41,14 @@ import argparse
 import csv
 import json
 import os
+import secrets
 import sys
 from contextlib import ExitStack
 
 import h5py
 import numpy as np
 
-from . import formula_id, ptrms
+from . import catalogue, formula_id, ptrms
 
 _ANALYSIS_DEFAULTS = {
     "R": 1200.0,
@@ -454,6 +455,7 @@ def annotate_peaks(
     )
 
     have_spec = avgspec is not None and a is not None and b is not None
+    compound_catalogue = catalogue.CompoundCatalogue()
 
     def obs_ratios(mz):
         if not have_spec:
@@ -496,12 +498,21 @@ def annotate_peaks(
         mz, h = p["mz"], p.get("height", 0.0)
         e = dict(p)
         e["neutral_mass"] = round(mz - ptrms.PROTON, 4)
-        cands = formula_id.score_peak(
+        observed_isotopes = obs_ratios(mz)
+        local_candidates = formula_id.score_peak(
             mz,
             drift,
-            obs_ratios=obs_ratios(mz),
+            obs_ratios=observed_isotopes,
             elements=elements,
             compounds_of_interest=compounds_of_interest,
+        )
+        cands = compound_catalogue.score_peak(
+            mz,
+            drift=drift,
+            candidates=local_candidates,
+            obs_ratios=observed_isotopes,
+            compounds_of_interest=compounds_of_interest,
+            elements=elements,
         )
         e["candidates"] = cands
         # normalized top-candidate score / near-isobar ambiguity, surfaced explicitly;
@@ -544,7 +555,10 @@ def annotate_peaks(
                 }
         flags = []
         if peak_index in reagent_labels:
-            flags.append("reagent/cluster: " + reagent_labels[peak_index])
+            reagent_name = reagent_labels[peak_index]
+            isobaric_water_cluster = reagent_name.startswith("H3O+·(")
+            if not (isobaric_water_cluster and cands):
+                flags.append("reagent/cluster: " + reagent_name)
         for q in peaks:
             if 0.008 < mz - q["mz"] < 0.4 and q.get("height", 0) > 20 * max(h, 1):
                 flags.append(f"possible tail/ringing of taller m/z {q['mz']:.3f}")
@@ -579,8 +593,174 @@ def annotate_peaks(
         if flags:
             e["likely_artifact"] = flags
         out.append(e)
+    interpret_peak_roles(out, drift=drift, R_phys=R_phys)
     _assign_suggested_identities(out, assign_all_library=assign_all_library)
     return drift, out
+
+
+def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
+    """Attach evidence-backed non-analyte or unresolved interpretations.
+
+    Formula candidates describe protonated neutral analytes. This separate list covers
+    peaks for which assigning a neutral compound would be misleading: known reagent
+    ions, detector artefacts, likely isotope channels, authored identities outside the
+    current candidate window, and unresolved real ions. A possible isotope requires a
+    stronger measured parent at the expected spacing; charge states and fragments are
+    intentionally not inferred from mass alone.
+    """
+    if not peaks:
+        return peaks
+
+    def measured_mz(peak):
+        return float(peak.get("apex", peak["mz"])) / float(drift)
+
+    def abundance(peak):
+        value = peak.get("abundance", peak.get("height", 0.0))
+        return 0.0 if value is None else max(0.0, float(value))
+
+    masses = [measured_mz(peak) for peak in peaks]
+    heights = [abundance(peak) for peak in peaks]
+    reagent_by_index = {}
+    for marker_mz, marker_name in _REAGENT_MZ.items():
+        nearest_index = min(
+            range(len(peaks)), key=lambda candidate: abs(masses[candidate] - marker_mz)
+        )
+        if abs(masses[nearest_index] - marker_mz) <= _REAGENT_TOL_DA:
+            reagent_by_index[nearest_index] = marker_name
+    for index, peak in enumerate(peaks):
+        interpretations = []
+        flags = list(peak.get("likely_artifact") or [])
+        reagent = next(
+            (
+                flag.split(": ", 1)[1]
+                for flag in flags
+                if flag.startswith("reagent/cluster: ")
+            ),
+            None,
+        )
+        if reagent is None:
+            reagent = reagent_by_index.get(index)
+        isobaric_water_cluster = bool(reagent and reagent.startswith("H3O+·("))
+        if isobaric_water_cluster and peak.get("candidates"):
+            reagent = None
+        if reagent:
+            interpretations.append(
+                {
+                    "kind": "reagent",
+                    "label": reagent,
+                    "source": "known reagent-ion exact mass",
+                    "evidence": [
+                        f"nearest reagent marker within {_REAGENT_TOL_DA * 1000:.0f} mDa"
+                    ],
+                    "exclude_from_analyte_assignment": True,
+                }
+            )
+        noise_flags = [flag for flag in flags if _is_noise_artifact([flag])]
+        if noise_flags:
+            interpretations.append(
+                {
+                    "kind": "artifact",
+                    "label": "detector artefact / noise",
+                    "source": "peak-shape and reagent-region diagnostics",
+                    "evidence": noise_flags,
+                    "exclude_from_analyte_assignment": True,
+                }
+            )
+
+        if not interpretations and not peak.get("candidates"):
+            isotope_options = []
+            for order, spacing in ((1, formula_id.DM1), (2, formula_id.DM2)):
+                for parent_index, parent_mass in enumerate(masses):
+                    parent_candidates = peaks[parent_index].get("candidates") or []
+                    if (
+                        parent_index == index
+                        or heights[parent_index] <= heights[index]
+                        or not parent_candidates
+                    ):
+                        continue
+                    residual = masses[index] - parent_mass - spacing
+                    predicted = float(
+                        (parent_candidates[0].get("iso_pred") or [0.0, 0.0])[order - 1]
+                    )
+                    ratio = heights[index] / heights[parent_index]
+                    compatible = predicted > 0 and ratio <= max(
+                        predicted * 3.0, predicted + 0.02
+                    )
+                    if abs(residual) <= _REAGENT_TOL_DA and compatible:
+                        isotope_options.append(
+                            (
+                                abs(residual),
+                                -heights[parent_index],
+                                parent_mass,
+                                parent_index,
+                                order,
+                                residual,
+                                ratio,
+                                predicted,
+                            )
+                        )
+            if isotope_options:
+                (
+                    _,
+                    _,
+                    parent_mass,
+                    _parent_index,
+                    order,
+                    residual,
+                    ratio,
+                    predicted,
+                ) = min(isotope_options)
+                interpretations.append(
+                    {
+                        "kind": "isotope",
+                        "label": f"possible M+{order} isotope of m/z {parent_mass:.4f}",
+                        "source": "measured spacing and predicted isotope envelope",
+                        "related_mz": round(parent_mass, 4),
+                        "isotope_order": order,
+                        "evidence": [
+                            f"spacing residual {residual * 1000:+.1f} mDa",
+                            f"observed ratio {ratio:.3g}; predicted {predicted:.3g}",
+                        ],
+                        "exclude_from_analyte_assignment": True,
+                    }
+                )
+
+        if not interpretations and not peak.get("candidates"):
+            authored_formula = peak.get("formula") or peak.get("suggested_formula")
+            if authored_formula:
+                interpretations.append(
+                    {
+                        "kind": "authored",
+                        "label": str(peak.get("label") or authored_formula),
+                        "formula": str(authored_formula),
+                        "source": "saved review assignment",
+                        "evidence": [
+                            "preserved even though it is outside the current generated "
+                            "candidate set"
+                        ],
+                        "exclude_from_analyte_assignment": False,
+                    }
+                )
+            else:
+                evidence = [
+                    "no plausible protonated-neutral formula fits within 12 mDa"
+                ]
+                if peak.get("overlap"):
+                    evidence.append("the peak overlaps a neighbouring channel")
+                interpretations.append(
+                    {
+                        "kind": "unresolved",
+                        "label": f"unresolved ion at m/z {masses[index]:.4f}",
+                        "source": "strict local formula search",
+                        "evidence": evidence,
+                        "exclude_from_analyte_assignment": True,
+                    }
+                )
+        if interpretations:
+            peak["interpretation_candidates"] = interpretations
+        else:
+            peak.pop("interpretation_candidates", None)
+    return peaks
 
 
 def _assign_suggested_identities(peaks, *, assign_all_library=False):
@@ -607,6 +787,17 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
         )
         if reagent:
             peak["suggested_label"] = reagent
+            continue
+        interpretation = next(
+            (
+                item
+                for item in peak.get("interpretation_candidates", [])
+                if item.get("exclude_from_analyte_assignment")
+            ),
+            None,
+        )
+        if interpretation:
+            peak["suggested_label"] = interpretation["label"]
             continue
         candidates = peak.get("candidates") or []
         if not candidates and existing_label:
@@ -849,6 +1040,8 @@ def _compact_peak(e):
         }
     if "likely_artifact" in e:
         out["likely_artifact"] = e["likely_artifact"]
+    if "interpretation_candidates" in e:
+        out["interpretation_candidates"] = e["interpretation_candidates"]
     return out
 
 
@@ -922,6 +1115,8 @@ def cmd_peaks(args):
             "filled when the formula is in the rate table (else k_estimated). "
             "`iso_pred` vs `iso_obs` = predicted vs observed (M+1,M+2)/M. "
             "`suggested_label` is an editable, globally unique high-ranked default. "
+            "`interpretation_candidates` explains reagent, isotope, artefact, authored "
+            "or unresolved channels when a neutral compound assignment would mislead. "
             "`prominence` is the apex's rise above local baseline in cps (real "
             "peak ≈ height; noise "
             "ripple ≈ 0). neutral_mass = mz − proton."
@@ -936,8 +1131,8 @@ def cmd_peaks(args):
             "top-candidate score used by conservative gates, not a calibrated "
             "probability), and, when "
             "relevant, `id_ambiguous` (close rivals), `overlap` (quantification "
-            "uncertainty), and `likely_artifact` (reagent/cluster diagnostic ions "
-            "— real, keep or drop as you like). "
+            "uncertainty), and `interpretation_candidates` (evidence-backed reagent, "
+            "isotope, artefact or unresolved-ion explanations). "
             "`prominence` is the apex's rise above its local baseline in cps: a "
             "real peak's ≈ its height, a noise ripple/shoulder's is near 0. "
             "neutral_mass = mz − proton. Pass `--full` for every candidate + the "
@@ -1663,12 +1858,16 @@ def cmd_viz(args):
             initial["viz"] = {**(config.get("viz") or {}), "x_axis_unit": x_axis_unit}
             with open(cfg_path, "w", encoding="utf-8") as fh:
                 json.dump(initial, fh, indent=2)
-        html = viz.render_html(data, config_path=cfg_path)
+        review_token = secrets.token_urlsafe(24)
+        html = viz.render_html(
+            data,
+            config_path=cfg_path,
+            page_token=review_token,
+        )
         run = lambda cfg: analyze_config_to_csv(
             args.h5, cfg, args.out, args.sep, args.include_cycle_rows
         )
         spec_fn = lambda lo, hi: interval_spectrum(args.h5, lo, hi)
-
         def peak_preview_fn(lo, hi):
             with h5py.File(args.h5, "r") as source:
                 axis = ptrms.load_mass_axis(source)
