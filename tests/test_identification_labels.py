@@ -234,6 +234,32 @@ class AutomaticAssignmentTest(unittest.TestCase):
         )
         self.assertEqual(peaks[0]["suggested_candidate_rank"], 2)
 
+    def test_global_matching_maximises_quality_after_coverage(self):
+        peaks = [
+            {
+                "mz": 50.0,
+                "height": 20.0,
+                "candidates": [
+                    {"formula": "C3H6O", "name": "acetone", "probability": 0.99},
+                    {"formula": "C4H8", "name": "butene", "probability": 0.01},
+                ],
+            },
+            {
+                "mz": 51.0,
+                "height": 10.0,
+                "candidates": [
+                    {"formula": "C3H6O", "name": "acetone", "probability": 0.34},
+                    {"formula": "C4H8", "name": "butene", "probability": 0.33},
+                    {"formula": "C5H10", "name": "pentene", "probability": 0.33},
+                ],
+            },
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertEqual(peaks[0]["suggested_formula"], "C3H6O")
+        self.assertEqual(peaks[1]["suggested_formula"], "C4H8")
+
     def test_duplicate_without_fallback_is_left_unassigned(self):
         candidate = {
             "formula": "C3H6O",
@@ -251,7 +277,7 @@ class AutomaticAssignmentTest(unittest.TestCase):
         self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
         self.assertNotIn("suggested_formula", peaks[0])
 
-    def test_named_duplicate_cannot_reenter_as_a_formula_only_assignment(self):
+    def test_named_duplicate_uses_the_next_formula_only_guess(self):
         candidates = [
             {
                 "formula": "C3H6O",
@@ -278,10 +304,11 @@ class AutomaticAssignmentTest(unittest.TestCase):
         analyze._assign_suggested_identities(peaks, assign_all_library=True)
 
         self.assertEqual(peaks[1]["suggested_formula"], "C3H6O")
-        self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
-        self.assertNotIn("suggested_formula", peaks[0])
+        self.assertEqual(peaks[0]["suggested_label"], "C3H8")
+        self.assertEqual(peaks[0]["suggested_formula"], "C3H8")
+        self.assertEqual(peaks[0]["suggested_candidate_rank"], 2)
 
-    def test_formula_only_fallback_is_globally_unique(self):
+    def test_formula_only_guesses_are_globally_unique(self):
         candidates = [
             {"formula": "C3H8", "name": None, "probability": 0.95},
             {"formula": "C2H6O", "name": None, "probability": 0.05},
@@ -303,9 +330,30 @@ class AutomaticAssignmentTest(unittest.TestCase):
 
         analyze._assign_suggested_identities(peaks, assign_all_library=True)
 
-        self.assertTrue(peaks[0]["suggested_label"].startswith("unknown m/z"))
-        self.assertNotIn("suggested_formula", peaks[0])
-        self.assertEqual(peaks[1]["suggested_formula"], "C3H8")
+        self.assertEqual(
+            {peak["suggested_formula"] for peak in peaks}, {"C3H8", "C2H6O"}
+        )
+        self.assertTrue(all(peak["suggested_label"] for peak in peaks))
+
+    def test_ambiguous_formula_only_peak_gets_an_app_review_default(self):
+        peaks = [
+            {
+                "mz": 45.0,
+                "height": 5.0,
+                "id_confidence": 0.4,
+                "id_ambiguous": True,
+                "candidates": [
+                    {"formula": "C3H8", "name": None, "probability": 0.4},
+                    {"formula": "C2H6O", "name": None, "probability": 0.35},
+                ],
+            }
+        ]
+
+        analyze._assign_suggested_identities(peaks, assign_all_library=True)
+
+        self.assertEqual(peaks[0]["suggested_label"], "C3H8")
+        self.assertEqual(peaks[0]["suggested_formula"], "C3H8")
+        self.assertEqual(peaks[0]["suggested_candidate_rank"], 1)
 
     def test_headless_default_keeps_a_low_share_library_match_unassigned(self):
         peaks = [

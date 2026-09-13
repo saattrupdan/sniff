@@ -122,7 +122,7 @@ gets the deterministic pipeline — detected peaks and detected intervals — wr
 that path and then loaded, so the panel starts as a starting point rather than an empty
 table. **Use table on another file** explicitly carries the current chemical identities
 to a newly selected run. Sniff matches them one-to-one to that file's measured peaks,
-adds every other credible detection with a unique editable library best guess where one
+adds every other credible detection with a unique editable chemical best guess where one
 is available, and never transfers ranges, manual windows, or calibration. Missing or
 ambiguous targets are reported rather than snapped to unrelated peaks. **Export** runs
 the full-precision analysis to `<name>.csv` beside the file and leaves everything open;
@@ -452,10 +452,11 @@ Compound identification enumerates candidate molecular formulas offline (no exte
 database) and ranks them by exact-mass error, the measured vs predicted ¹³C(M+1)/
 heteroatom(M+2, e.g. S/Cl) isotope pattern, plausibility (integer DBE, nitrogen rule,
 element ratios), and any declared contextual prior — so near-isobars are told apart by
-composition, not "nearest mass". New app review panels use those rankings to fill as
-many editable PTR Library compound defaults as possible. A global match assigns each
+composition, not "nearest mass". New app review panels use those rankings to give every
+candidate-backed peak an editable chemical default: a preferred or canonical PTR Library
+name when available, otherwise the best candidate formula. A global match assigns each
 formula/compound family at most once and lets a conflicting peak use its next-best
-available library candidate. The review continues to show ambiguity, score shares, and
+available candidate. The review continues to show ambiguity, score shares, and
 alternative names. Candidate rankings cannot determine structural isomers; an
 interest-selected or
 canonical isomer name is a provisional best guess from the bundled mapping, not proof of

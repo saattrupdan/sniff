@@ -435,8 +435,8 @@ def annotate_peaks(
     `delta_mDa` is the exact-mass residual after that handling, plus
     predicted/observed isotope ratios and a normalised candidate score/share
     (`probability`). It is not a
-    calibrated identification probability. Automatic names are editable best guesses;
-    formula-only unknowns retain conservative assignment gates."""
+    calibrated identification probability. Automatic names and formulas are editable
+    best guesses when a review workflow requests maximum-coverage defaults."""
     if mass_axis is not None:
         ptrms.validate_mass_axis(mass_axis)
     tbl = ptrms.load_rate_constants()
@@ -574,12 +574,13 @@ def annotate_peaks(
 
 
 def _assign_suggested_identities(peaks, *, assign_all_library=False):
-    """Choose editable library defaults without assigning one formula family twice.
+    """Choose editable identity defaults without assigning one formula family twice.
 
     The matching favours each peak's ranked candidate order while maximising the number
-    of distinct library-backed assignments. Compounds of interest have already received
-    their score prior and provide the preferred isomer label. Reagent ions are outside
-    the analyte matching, and formula-only unknowns keep their stricter evidence gate.
+    of distinct assignments. Compounds of interest have already received their score
+    prior and provide the preferred isomer label. In maximum-coverage review mode, a
+    candidate without a library name uses its formula as the best available label.
+    Reagent ions remain outside the analyte matching.
     """
     options = {}
     for index, peak in enumerate(peaks):
@@ -606,15 +607,18 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
                 peak["suggested_candidate_rank"] = existing_rank
             continue
         peak["suggested_label"] = f"unknown m/z {peak['mz']:.3f}"
-        known = []
+        identity_options = []
         for rank, candidate in enumerate(candidates, start=1):
-            label = candidate.get("preferred_name") or candidate.get("name")
             formula = candidate.get("formula")
+            compound_name = candidate.get("preferred_name") or candidate.get("name")
+            label = compound_name or (formula if assign_all_library else None)
             eligible = assign_all_library or (
-                rank == 1 and peak.get("id_confidence", 0) >= 0.6
+                rank == 1
+                and compound_name
+                and peak.get("id_confidence", 0) >= 0.6
             )
             if label and formula and eligible:
-                known.append(
+                identity_options.append(
                     {
                         "formula": formula,
                         "label": label,
@@ -623,36 +627,13 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
                         "interest": bool(candidate.get("interest_matches")),
                     }
                 )
-        if known:
-            options[index] = known
+        if identity_options:
+            options[index] = identity_options
 
-    owners = {}
-    assignments = {}
-
-    def place(index, seen):
-        for option in options.get(index, []):
-            key = option["formula"].upper()
-            if key in seen:
-                continue
-            seen.add(key)
-            owner = owners.get(key)
-            if owner is None or place(owner, seen):
-                owners[key] = index
-                assignments[index] = option
-                return True
-        return False
-
-    order = sorted(
-        options,
-        key=lambda index: (
-            -int(options[index][0]["interest"]),
-            -float(options[index][0]["share"]),
-            -float(peaks[index].get("height", 0.0)),
-            float(peaks[index]["mz"]),
-        ),
-    )
-    for index in order:
-        place(index, set())
+    assignments = _optimal_identity_assignments(peaks, options)
+    owners = {
+        option["formula"].upper(): index for index, option in assignments.items()
+    }
 
     for index, option in assignments.items():
         peaks[index]["suggested_label"] = option["label"]
@@ -688,6 +669,118 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
             peak["suggested_formula"] = top["formula"]
             peak["suggested_candidate_rank"] = 1
             owners[top["formula"].upper()] = index
+
+
+def _optimal_identity_assignments(peaks, options):
+    """Maximise assignment count, then total candidate quality, deterministically."""
+    if not options:
+        return {}
+
+    peak_indices = sorted(options)
+    formulas = sorted(
+        {
+            option["formula"].upper()
+            for peak_options in options.values()
+            for option in peak_options
+        }
+    )
+    n_peaks = len(peak_indices)
+    n_formulas = len(formulas)
+    strongest = sorted(
+        peak_indices,
+        key=lambda index: (
+            -int(options[index][0]["interest"]),
+            -float(options[index][0]["share"]),
+            -float(peaks[index].get("height", 0.0)),
+            float(peaks[index]["mz"]),
+        ),
+    )
+    peak_priority = {
+        index: n_peaks - rank for rank, index in enumerate(strongest)
+    }
+    option_maps = {
+        index: {option["formula"].upper(): option for option in options[index]}
+        for index in peak_indices
+    }
+    max_edge_quality = 1_000_000_401 + 6 * n_peaks
+    cardinality_bonus = (n_peaks + 1) * max_edge_quality
+    invalid_cost = cardinality_bonus
+    costs = []
+    for index in peak_indices:
+        row = []
+        for formula in formulas:
+            option = option_maps[index].get(formula)
+            if option is None:
+                row.append(invalid_cost)
+                continue
+            quality = round(float(option["share"]) * 1_000_000_000)
+            rank_preference = 6 - min(5, int(option["rank"]))
+            quality += (rank_preference - 1) * 100
+            quality += int(option["interest"]) * (n_peaks + 1)
+            quality += peak_priority[index] * rank_preference
+            row.append(-cardinality_bonus - quality)
+        row.extend([0] * n_peaks)
+        costs.append(row)
+
+    # One private dummy column per peak permits an unmatched result. The cardinality
+    # bonus makes every valid edge preferable and dominates all quality differences,
+    # so the rectangular Hungarian algorithm optimises quality only after coverage.
+    n_columns = n_formulas + n_peaks
+    row_potential = [0] * (n_peaks + 1)
+    column_potential = [0] * (n_columns + 1)
+    column_match = [0] * (n_columns + 1)
+    predecessor = [0] * (n_columns + 1)
+    infinity = 10**30
+    for row_index in range(1, n_peaks + 1):
+        column_match[0] = row_index
+        column = 0
+        min_cost = [infinity] * (n_columns + 1)
+        used = [False] * (n_columns + 1)
+        while True:
+            used[column] = True
+            active_row = column_match[column]
+            delta = infinity
+            next_column = 0
+            for candidate_column in range(1, n_columns + 1):
+                if used[candidate_column]:
+                    continue
+                reduced = (
+                    costs[active_row - 1][candidate_column - 1]
+                    - row_potential[active_row]
+                    - column_potential[candidate_column]
+                )
+                if reduced < min_cost[candidate_column]:
+                    min_cost[candidate_column] = reduced
+                    predecessor[candidate_column] = column
+                if min_cost[candidate_column] < delta:
+                    delta = min_cost[candidate_column]
+                    next_column = candidate_column
+            for candidate_column in range(n_columns + 1):
+                if used[candidate_column]:
+                    row_potential[column_match[candidate_column]] += delta
+                    column_potential[candidate_column] -= delta
+                else:
+                    min_cost[candidate_column] -= delta
+            column = next_column
+            if column_match[column] == 0:
+                break
+        while True:
+            next_column = predecessor[column]
+            column_match[column] = column_match[next_column]
+            column = next_column
+            if column == 0:
+                break
+
+    assignments = {}
+    for column in range(1, n_formulas + 1):
+        matched_row = column_match[column]
+        if matched_row == 0:
+            continue
+        peak_index = peak_indices[matched_row - 1]
+        option = option_maps[peak_index].get(formulas[column - 1])
+        if option is not None:
+            assignments[peak_index] = option
+    return assignments
 
 
 def _is_noise_artifact(flags):
