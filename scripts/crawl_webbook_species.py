@@ -147,6 +147,19 @@ def _write_body(cache_dir, body):
     return digest, path
 
 
+def _stored_body_path(cache_dir, stored_path, expected_sha):
+    path = Path(stored_path)
+    if not path.is_absolute():
+        return Path(cache_dir) / path
+    if path.exists():
+        return path
+    return _cache_path(Path(cache_dir), expected_sha)
+
+
+def _relative_body_path(cache_dir, path):
+    return str(Path(path).relative_to(Path(cache_dir)))
+
+
 def _read_body(path, expected_sha):
     with gzip.open(path, "rb") as stream:
         body = stream.read()
@@ -167,7 +180,10 @@ def _fetch_document(connection, client, cache_dir, url, kind, *, force=False):
         and row["body_path"]
     ):
         try:
-            return _read_body(Path(row["body_path"]), row["response_sha"])
+            return _read_body(
+                _stored_body_path(cache_dir, row["body_path"], row["response_sha"]),
+                row["response_sha"],
+            )
         except (OSError, RuntimeError):
             pass
     now = time.time()
@@ -182,7 +198,7 @@ def _fetch_document(connection, client, cache_dir, url, kind, *, force=False):
                 response_sha=excluded.response_sha,body_path=excluded.body_path,
                 error=NULL,updated_at=excluded.updated_at
             """,
-            (url, kind, digest, str(path), now),
+            (url, kind, digest, _relative_body_path(cache_dir, path), now),
         )
         connection.commit()
         return body
@@ -606,7 +622,7 @@ def crawl(state_path=STATE_PATH, cache_dir=CACHE_DIR, max_records=None):
                     "response_sha=?,body_path=?,detail_json=?,claim_owner=NULL,updated_at=?",
                     (
                         digest,
-                        str(path),
+                        _relative_body_path(cache_dir, path),
                         json.dumps(detail, ensure_ascii=True, sort_keys=True),
                         now,
                     ),
@@ -684,7 +700,12 @@ def crawl(state_path=STATE_PATH, cache_dir=CACHE_DIR, max_records=None):
                         row["nist_id"],
                         "status='parse_error',attempts=attempts+1,retry_at=NULL,error=?,"
                         "response_sha=?,body_path=?,claim_owner=NULL,updated_at=?",
-                        (str(exc), digest, str(path), now),
+                        (
+                            str(exc),
+                            digest,
+                            _relative_body_path(cache_dir, path),
+                            now,
+                        ),
                     )
                 else:
                     _record_retry(connection, row, exc, now, owner)
@@ -766,7 +787,7 @@ def _record_retry(connection, row, exc, now, owner):
     )
 
 
-def reparse(state_path=STATE_PATH):
+def reparse(state_path=STATE_PATH, cache_dir=CACHE_DIR):
     connection = _connect(state_path)
     rows = connection.execute(
         """
@@ -778,7 +799,10 @@ def reparse(state_path=STATE_PATH):
     failed = 0
     for index, row in enumerate(rows, 1):
         try:
-            body = _read_body(Path(row["body_path"]), row["response_sha"])
+            body = _read_body(
+                _stored_body_path(cache_dir, row["body_path"], row["response_sha"]),
+                row["response_sha"],
+            )
             detail = nist_webbook._parse_detail(body, nist_id=row["nist_id"])
             detail["url"] = row["url"]
             detail["webbook_id"] = _webbook_id(row["nist_id"], row["url"])
@@ -870,7 +894,7 @@ def main(argv=None):
     elif args.command == "crawl":
         crawl(args.state, args.cache_dir, max_records=args.max_records)
     elif args.command == "reparse":
-        reparse(args.state)
+        reparse(args.state, args.cache_dir)
     else:
         status(args.state)
 

@@ -79,7 +79,7 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
         row = connection.execute(
             "SELECT response_sha,body_path,detail_json FROM species_job"
         ).fetchone()
-    assert Path(row["body_path"]).is_file()
+    assert (cache / row["body_path"]).is_file()
     assert json.loads(row["detail_json"])["name"] == "Acetaldehyde"
     with crawler._connect(state) as connection:
         u_detail = json.loads(
@@ -94,7 +94,9 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
         "WebBookClient",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("network used")),
     )
-    crawler.reparse(state)
+    moved_cache = tmp_path / "transferred-pages"
+    cache.rename(moved_cache)
+    crawler.reparse(state, moved_cache)
     assert crawler.status(state, emit=False)["done"] == 3
     with crawler._connect(state) as connection:
         reparsed = json.loads(
