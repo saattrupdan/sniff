@@ -1,4 +1,4 @@
-"""Read-only access to Sniff's bundled PTR-focused compound catalogue.
+"""Read-only access to Sniff's bundled compound catalogue.
 
 The catalogue contains metadata proposals, not PTR-MS identification evidence. Formulae
 are matched by locally computed exact mass, and names never replace PTR Library names or
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import formula_id, isotopes
 
-CATALOGUE_SCHEMA_VERSION = 1
+CATALOGUE_SCHEMA_VERSION = 2
 CATALOGUE_RESOURCE = "compound_catalogue.sqlite3"
 
 
@@ -76,25 +76,26 @@ class CompoundCatalogue:
         finally:
             connection.close()
 
-    def lookup_formula(self, formula, *, limit=100):
+    def lookup_formula(self, formula, *, limit=None):
         """Return validated species proposals for one exact molecular formula."""
         canonical = canonical_formula(formula)
         connection = self._connect()
         if connection is None:
             return []
+        query = """
+            SELECT f.formula, f.exact_mass, s.nist_id, s.name, s.cas,
+                   s.inchi, s.inchi_key, s.url
+            FROM formula AS f
+            JOIN species AS s ON s.formula_id = f.id
+            WHERE f.formula = ?
+            ORDER BY s.name COLLATE NOCASE, s.nist_id, s.url
+        """
+        parameters = [canonical]
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters.append(max(0, int(limit)))
         try:
-            rows = connection.execute(
-                """
-                SELECT f.formula, f.exact_mass, s.nist_id, s.name, s.cas,
-                       s.inchi, s.inchi_key, s.url
-                FROM formula AS f
-                JOIN species AS s ON s.formula_id = f.id
-                WHERE f.formula = ?
-                ORDER BY s.name COLLATE NOCASE, s.nist_id
-                LIMIT ?
-                """,
-                (canonical, int(limit)),
-            ).fetchall()
+            rows = connection.execute(query, parameters).fetchall()
         finally:
             connection.close()
         return [dict(row) for row in rows]

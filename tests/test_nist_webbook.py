@@ -1,6 +1,8 @@
 import urllib.error
 from collections import deque
 
+import pytest
+
 from sniff import formula_id, nist_webbook
 
 FORMULA_RESULTS = b"""<!doctype html><html><body><main><ol>
@@ -79,6 +81,21 @@ def client(tmp_path, opener, **kwargs):
         crawl_delay=0,
         **kwargs,
     )
+
+
+def test_detail_parser_distinguishes_unusable_records_from_parser_failures():
+    registry_missing = b"<title>Registry Number Not Found</title>"
+    search_results = b"<title>Search Results</title>"
+    no_formula = b'<h1 id="Top">Coffee ground</h1><ul></ul>'
+
+    for page in (registry_missing, search_results):
+        with pytest.raises(nist_webbook.UnusableSpeciesError):
+            nist_webbook._parse_detail(page, nist_id="B3000001")
+    with pytest.raises(nist_webbook.UnusableSpeciesError):
+        nist_webbook._parse_detail(no_formula, nist_id="C123")
+    with pytest.raises(nist_webbook.WebBookError) as error:
+        nist_webbook._parse_detail(b"<html>unexpected</html>", nist_id="C123")
+    assert type(error.value) is nist_webbook.WebBookError
 
 
 def test_formula_lookup_filters_radicals_and_isotopologues(tmp_path):

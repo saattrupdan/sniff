@@ -26,13 +26,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   ranking and supply the preferred provisional isomer name; global matching prevents an
   automatic compound/formula family from being assigned twice and uses the next-best
   available candidate instead.
-- Sniff now ships a generated, read-only PTR-focused SQLite catalogue derived from the
-  NIST Chemistry WebBook. It provides offline exact-mass, formula, name, CAS and InChI
-  lookup while keeping external names visibly separate from PTR-specific evidence. A
-  complete-sitemap maintainer crawler caches every canonical species page for offline
-  classification, resumes from per-page checkpoints, refreshes robots policy daily,
-  observes NIST's host-wide five-second delay and stores no HTML or spectra in the
-  package.
+- Sniff now ships a generated, read-only SQLite catalogue derived from the complete NIST
+  Chemistry WebBook sitemap. Its filtered 20,106 formula families and 93,946 ordinary
+  neutral species provide offline exact-mass, formula, name, CAS and InChI lookup while
+  keeping external names visibly separate from PTR-specific evidence. The maintainer
+  crawler caches every canonical page for offline classification, resumes from per-page
+  checkpoints, refreshes robots policy daily, observes NIST's host-wide five-second
+  delay and stores no HTML or spectra in the package.
 - Every detected peak now has either a strict formula candidate or an explicit
   scientific interpretation. Known reagent ions, evidence-backed possible isotope
   channels and detector artefacts are excluded from automatic analyte assignment;

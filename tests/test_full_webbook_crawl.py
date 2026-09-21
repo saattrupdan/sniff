@@ -108,6 +108,51 @@ def test_sitemap_crawl_checkpoints_raw_pages_and_reparses_offline(
     assert manifest
 
 
+def test_reparse_marks_formula_less_pages_as_terminal_unusable(tmp_path):
+    crawler = _crawler_module()
+    state = tmp_path / "state.sqlite3"
+    cache = tmp_path / "pages"
+    body = b'<html><h1 id="Top">Coffee ground</h1><ul></ul></html>'
+    digest, path = crawler._write_body(cache, body)
+    manifest = "manifest"
+    with crawler._connect(state) as connection:
+        connection.execute(
+            "INSERT INTO generation VALUES (?, ?, ?, ?, 1)",
+            (manifest, "index", 1.0, 1),
+        )
+        connection.execute(
+            "INSERT INTO generation_species VALUES (?, 'C123')", (manifest,)
+        )
+        connection.execute(
+            "INSERT INTO crawl_meta VALUES ('active_manifest', ?)", (manifest,)
+        )
+        connection.execute(
+            """
+            INSERT INTO species_job(
+                nist_id, url, status, response_sha, body_path, updated_at
+            ) VALUES ('C123', ?, 'parse_error', ?, ?, 1)
+            """,
+            (
+                "https://webbook.nist.gov/cgi/cbook.cgi?ID=C123&Units=SI",
+                digest,
+                str(path.relative_to(cache)),
+            ),
+        )
+        connection.commit()
+
+    crawler.reparse(state, cache)
+
+    summary = crawler.status(state, emit=False)
+    assert summary["unusable"] == 1
+    assert summary["unresolved"] == 0
+    assert summary["ready_to_classify"] is True
+    with crawler._connect(state) as connection:
+        parser_version = connection.execute(
+            "SELECT parser_version FROM species_job WHERE nist_id='C123'"
+        ).fetchone()[0]
+    assert parser_version == crawler.nist_webbook.PARSER_VERSION
+
+
 def test_cache_write_verifies_and_replaces_corrupt_content(tmp_path):
     crawler = _crawler_module()
     body = b"authoritative response"

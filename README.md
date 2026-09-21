@@ -425,16 +425,18 @@ for this package does not relicense the CSV or its cited data. The derived
 `rate_constants.json` is generated from that CSV by the bundled generator and carries
 the same attribution.
 
-The generated `compound_catalogue.sqlite3` contains a filtered, PTR-focused subset of
-the public NIST Chemistry WebBook, Standard Reference Database 69. The current build
-covers 269 formula families and 10,999 ordinary species records. It stores formula,
-locally computed exact mass, ordinary species names, NIST identifiers and available CAS
-and InChI metadata. Sniff opens it read-only and offline. NIST inclusion means only that
-data exist for a species; it is not evidence that the compound occurs in the experiment
-or produces the observed PTR ion. The maintainer-only
-`scripts/build_compound_catalogue.py` crawler identifies itself, observes NIST's
-host-wide five-second crawl delay, records resumable checkpoints and response hashes,
-and never bundles cached HTML or spectra.
+The generated `compound_catalogue.sqlite3` contains a filtered export of the public NIST
+Chemistry WebBook, Standard Reference Database 69. The current build covers 20,106
+formula families and 93,946 ordinary neutral species records from a 129,365-page sitemap
+manifest. It stores formula, locally computed exact mass, ordinary species names,
+source URLs and available NIST, CAS and InChI identifiers. Sniff opens it read-only and
+offline.
+NIST inclusion means only that data exist for a species; it is not evidence that the
+compound occurs in the experiment, produces the observed PTR ion, or is the correct
+structural isomer. Catalogue formulae must still pass Sniff's mass, isotope and chemical
+plausibility checks, while names remain reviewer-selectable proposals. The maintainer
+crawlers identify themselves, observe NIST's host-wide five-second crawl delay, record
+resumable checkpoints and response hashes, and never bundle cached HTML or spectra.
 
 Maintainers rebuilding the complete catalogue first use the WebBook sitemap rather than
 an individual experiment or a preselected formula list:
@@ -442,16 +444,21 @@ an individual experiment or a preselected formula list:
 ```bash
 uv run python scripts/crawl_webbook_species.py discover
 uv run python scripts/crawl_webbook_species.py crawl
+uv run python scripts/crawl_webbook_species.py reparse
 uv run python scripts/crawl_webbook_species.py status
+uv run python scripts/build_compound_catalogue.py export-full
 ```
 
 The sitemap crawl checkpoints every canonical species page in
 `~/.sniff/nist-webbook-full.sqlite3` and keeps SHA-verified compressed responses under
 `~/.sniff/nist-webbook-pages/`. It is safe to stop and resume, refreshes robots policy
 daily, and takes at least 7.5 days for roughly 129,000 species at the required delay.
-Cached pages can be reparsed without network access. Only filtered identity metadata is
-exported to the package; WebBook HTML and EI spectra are never PTR identification
-evidence.
+Cached pages can be reparsed without network access. Export refuses pending or
+unresolved records, classifies formula-less pages explicitly, rejects unsupported,
+non-ordinary and
+chemically implausible records, and writes the compact catalogue atomically. Only
+filtered identity metadata is exported to the package; WebBook HTML and EI spectra are
+never PTR identification evidence.
 
 ## How it works
 

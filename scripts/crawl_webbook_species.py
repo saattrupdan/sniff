@@ -93,6 +93,7 @@ def _connect(path):
             response_sha TEXT,
             body_path TEXT,
             detail_json TEXT,
+            parser_version INTEGER,
             claim_owner TEXT,
             updated_at REAL
         );
@@ -112,6 +113,8 @@ def _connect(path):
     columns = {row[1] for row in connection.execute("PRAGMA table_info(species_job)")}
     if "claim_owner" not in columns:
         connection.execute("ALTER TABLE species_job ADD COLUMN claim_owner TEXT")
+    if "parser_version" not in columns:
+        connection.execute("ALTER TABLE species_job ADD COLUMN parser_version INTEGER")
     connection.commit()
     return connection
 
@@ -619,11 +622,13 @@ def crawl(state_path=STATE_PATH, cache_dir=CACHE_DIR, max_records=None):
                     owner,
                     row["nist_id"],
                     "status='done',attempts=attempts+1,retry_at=NULL,error=NULL,"
-                    "response_sha=?,body_path=?,detail_json=?,claim_owner=NULL,updated_at=?",
+                    "response_sha=?,body_path=?,detail_json=?,parser_version=?,"
+                    "claim_owner=NULL,updated_at=?",
                     (
                         digest,
                         _relative_body_path(cache_dir, path),
                         json.dumps(detail, ensure_ascii=True, sort_keys=True),
+                        nist_webbook.PARSER_VERSION,
                         now,
                     ),
                 )
@@ -638,6 +643,23 @@ def crawl(state_path=STATE_PATH, cache_dir=CACHE_DIR, max_records=None):
                 )
                 connection.commit()
                 raise
+            except nist_webbook.UnusableSpeciesError as exc:
+                _update_claimed(
+                    connection,
+                    owner,
+                    row["nist_id"],
+                    "status='unusable',attempts=attempts+1,retry_at=NULL,error=?,"
+                    "response_sha=?,body_path=?,detail_json=NULL,parser_version=?,"
+                    "claim_owner=NULL,updated_at=?",
+                    (
+                        str(exc),
+                        digest,
+                        _relative_body_path(cache_dir, path),
+                        nist_webbook.PARSER_VERSION,
+                        now,
+                    ),
+                )
+                consecutive_server_failures = 0
             except urllib.error.HTTPError as exc:
                 if exc.code in (401, 403):
                     _update_claimed(
@@ -797,6 +819,7 @@ def reparse(state_path=STATE_PATH, cache_dir=CACHE_DIR):
         """
     ).fetchall()
     failed = 0
+    unusable = 0
     for index, row in enumerate(rows, 1):
         try:
             body = _read_body(
@@ -808,10 +831,23 @@ def reparse(state_path=STATE_PATH, cache_dir=CACHE_DIR):
             detail["webbook_id"] = _webbook_id(row["nist_id"], row["url"])
             detail["manifest_key"] = row["nist_id"]
             connection.execute(
-                "UPDATE species_job SET status='done',error=NULL,detail_json=?,updated_at=? "
-                "WHERE nist_id=?",
+                "UPDATE species_job SET status='done',error=NULL,detail_json=?,"
+                "parser_version=?,updated_at=? WHERE nist_id=?",
                 (
                     json.dumps(detail, ensure_ascii=True, sort_keys=True),
+                    nist_webbook.PARSER_VERSION,
+                    time.time(),
+                    row["nist_id"],
+                ),
+            )
+        except nist_webbook.UnusableSpeciesError as exc:
+            unusable += 1
+            connection.execute(
+                "UPDATE species_job SET status='unusable',error=?,detail_json=NULL,"
+                "parser_version=?,updated_at=? WHERE nist_id=?",
+                (
+                    str(exc),
+                    nist_webbook.PARSER_VERSION,
                     time.time(),
                     row["nist_id"],
                 ),
@@ -819,14 +855,19 @@ def reparse(state_path=STATE_PATH, cache_dir=CACHE_DIR):
         except Exception as exc:
             failed += 1
             connection.execute(
-                "UPDATE species_job SET status='parse_error',error=?,updated_at=? WHERE nist_id=?",
+                "UPDATE species_job SET status='parse_error',error=?,detail_json=NULL,"
+                "parser_version=NULL,updated_at=? WHERE nist_id=?",
                 (str(exc), time.time(), row["nist_id"]),
             )
         if index % 1000 == 0:
             connection.commit()
     connection.commit()
     connection.close()
-    print(f"reparsed {len(rows)} cached species; {failed} failures", flush=True)
+    print(
+        f"reparsed {len(rows)} cached species; {unusable} unusable; "
+        f"{failed} failures",
+        flush=True,
+    )
 
 
 def status(state_path=STATE_PATH, *, emit=True):

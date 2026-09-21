@@ -136,6 +136,10 @@ change; the Windows half of it can only be verified on a Windows runner.
   `src/sniff/reference/ptrlibrary.csv` by
   `uv run python -m sniff.gen_rate_constants`. Change the source or generator,
   regenerate the JSON, and review both files together rather than hand-editing entries.
+- `src/sniff/reference/compound_catalogue.sqlite3` is exported from the complete
+  WebBook crawl state, not hand-edited. Run `crawl_webbook_species.py reparse` and
+  require `ready_to_classify: true`, then run `build_compound_catalogue.py export-full`.
+  Never commit the full crawl database or cached HTML pages.
 - Reference Markdown, CSV, and JSON files under `src/sniff/reference/` are
   package data. Keep `pyproject.toml` in sync when adding a new bundled file type.
 - `viz` reviews an already curated config; it must not silently perform peak or segment

@@ -19,14 +19,14 @@ def _catalogue(path):
         CREATE TABLE species (
             id INTEGER PRIMARY KEY,
             formula_id INTEGER NOT NULL REFERENCES formula(id),
-            nist_id TEXT NOT NULL UNIQUE,
+            nist_id TEXT UNIQUE,
             name TEXT NOT NULL,
             cas TEXT,
             inchi TEXT,
             inchi_key TEXT,
             url TEXT NOT NULL
         );
-        INSERT INTO metadata VALUES ('schema_version', '1');
+        INSERT INTO metadata VALUES ('schema_version', '2');
         INSERT INTO formula VALUES (1, 'C2H4O', 44.02621474849, 1);
         INSERT INTO species VALUES (
             1, 1, 'C75070', 'Acetaldehyde', '75-07-0',
@@ -53,7 +53,7 @@ def test_missing_catalogue_fails_open_without_creating_file(tmp_path):
 def test_formula_mass_and_metadata_queries_use_read_only_catalogue(tmp_path):
     compounds = _catalogue(tmp_path / "catalogue.sqlite3")
 
-    assert compounds.metadata()["schema_version"] == "1"
+    assert compounds.metadata()["schema_version"] == "2"
     result = compounds.lookup_formula("C2H4O")
     assert result[0]["name"] == "Acetaldehyde"
     assert result[0]["cas"] == "75-07-0"
@@ -89,9 +89,14 @@ def test_bundled_catalogue_has_versioned_ptr_seed_and_searchable_metadata():
     compounds = catalogue.CompoundCatalogue()
 
     metadata = compounds.metadata()
-    assert metadata["schema_version"] == "1"
-    assert int(metadata["formula_count"]) >= 269
-    assert int(metadata["species_count"]) >= 10_900
+    assert metadata["schema_version"] == "2"
+    assert metadata["source_manifest_sha"] == (
+        "410b9b568fdc095f05017813a03dbb7b86604fbcab85bb5721042e46aff7ab1f"
+    )
+    assert int(metadata["formula_count"]) >= 20_000
+    assert int(metadata["species_count"]) >= 93_000
+    assert compounds.lookup_formula("C8H14")
+    assert len(compounds.lookup_formula("C15H24O")) >= 600
     acetaldehyde = compounds.search("IKHGUXGNUITLKF-UHFFFAOYSA-N")[0]
     assert acetaldehyde["name"] == "Acetaldehyde"
     assert acetaldehyde["formula"] == "C2H4O"
@@ -103,7 +108,7 @@ def test_bundled_catalogue_contains_only_filtered_ordinary_names():
     with sqlite3.connect(compounds.path) as connection:
         names = [row[0] for row in connection.execute("SELECT name FROM species")]
 
-    assert len(names) >= 10_900
+    assert len(names) >= 93_000
     assert all(nist_webbook._ordinary_name(name) for name in names)
 
 

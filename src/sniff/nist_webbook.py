@@ -28,7 +28,7 @@ BASE_URL = "https://webbook.nist.gov/cgi/cbook.cgi"
 CACHE_PATH = Path.home() / ".sniff" / "nist-webbook.sqlite3"
 SCHEDULE_PATH = Path.home() / ".sniff" / "nist-webbook-schedule.sqlite3"
 CACHE_VERSION = 1
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 CRAWL_DELAY_S = 5.0
 REQUEST_TIMEOUT_S = 5.0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -59,6 +59,10 @@ _TRANSIENT_NAMES = {"methylene", "hcoh (hydroxymethylene)"}
 
 class WebBookError(RuntimeError):
     """A recoverable WebBook request, response, or parsing failure."""
+
+
+class UnusableSpeciesError(WebBookError):
+    """A WebBook page that cannot represent a neutral molecular species."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -214,8 +218,10 @@ class _DetailParser(HTMLParser):
                         value = value.removesuffix(" Copy").strip()
                     fields[key] = value
                     break
-        if not name or not fields.get("formula"):
-            raise WebBookError("the WebBook species page had no name or formula")
+        if not name:
+            raise WebBookError("the WebBook species page had no name")
+        if not fields.get("formula"):
+            raise UnusableSpeciesError("the WebBook record has no molecular formula")
         return {
             "nist_id": nist_id,
             "name": name,
@@ -672,8 +678,18 @@ def _parse_search(page, *, kind):
 
 
 def _parse_detail(page, *, nist_id):
+    source = page.decode("utf-8", "replace")
+    if re.search(
+        r"<title>\s*(?:Registry Number Not Found|Information from the InChI|"
+        r"Search Results)\s*</title>",
+        source,
+        re.IGNORECASE,
+    ):
+        raise UnusableSpeciesError(
+            "the WebBook page does not describe a registered molecular species"
+        )
     parser = _DetailParser()
-    parser.feed(page.decode("utf-8", "replace"))
+    parser.feed(source)
     return parser.record(nist_id=nist_id)
 
 
