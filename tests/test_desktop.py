@@ -418,7 +418,7 @@ def test_window_shutdown_waits_for_a_delayed_close_time_save(tmp_path, monkeypat
         "peaks": [{"mz": 42.0}],
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
 
     old_page = session.begin_review_page()

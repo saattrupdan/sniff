@@ -196,6 +196,21 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
             peaks.append((cls._observed_mass(100.123), 800.0))
         return peaks
 
+    def test_multi_point_mapping_is_authoritative_without_affine_shift(self):
+        with self._file(peaks=[]) as h5:
+            h5.create_dataset("CALdata/Mapping", data=DATA_10_26_33_MAPPING)
+            axis = ptrms.load_mass_axis(h5)
+
+        self.assertEqual(axis.scale, 1.0)
+        self.assertEqual(axis.offset, 0.0)
+        self.assertEqual(axis.diagnostics["authority"], "CALdata/Mapping")
+        self.assertFalse(axis.diagnostics["mass_domain_correction_applied"])
+        points = axis.diagnostics["mapping_calibration"]["points"]
+        self.assertEqual(len(points), 3)
+        self.assertLessEqual(
+            max(abs(point["residual_ppm"]) for point in points), 10.0
+        )
+
     def test_two_anchors_apply_shift_and_scale_to_the_whole_axis(self):
         with self._file(peaks=self._good_peaks()) as h5:
             axis = ptrms.load_mass_axis(h5)

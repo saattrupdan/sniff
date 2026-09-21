@@ -27,13 +27,16 @@ _JS_NORMAL_YEAR_10000_START_S = 253402300800.0
 
 K_ANCHOR_DEFAULT = 2.0  # 1e-9 cm3/s: the single k a non-kinetic calibration assumes
 
-# Run-internal reference ions. Their centres are measured on the file's unmodified
-# timebin calibration, then define a separate affine correction in the mass domain.
+# Run-internal reference ions. For authoritative multi-point Mapping files their
+# centres are stability diagnostics only. Older two-point/Spectrum calibrations retain
+# the separate affine correction in the mass domain.
 INTERNAL_MASS_ANCHORS = (
     ("water_cluster", 37.033),
     ("iodobenzene", 204.951),
 )
 INTERNAL_MASS_CORRECTION_MODEL = "m_corrected = scale*m_file + offset"
+MAPPING_AUTHORITY_MODEL = "authoritative-multi-point-mapping-v1"
+MASS_AXIS_ALGORITHM_VERSION = 2
 FILE_MASS_CALIBRATION_MODEL = "timebin = a*sqrt(m_file) + b"
 INTERNAL_ANCHOR_SEARCH_DA = 0.20
 INTERNAL_ANCHOR_MIN_PROMINENCE = 8.0
@@ -54,11 +57,11 @@ FORMULA_SCORE_SIGMA_FLOOR_PPM = 2.0
 
 
 MASS_AXIS_CONFIG_DOMAIN = "corrected"
-MASS_AXIS_CONFIG_VERSION = 1
+MASS_AXIS_CONFIG_VERSION = 2
 
 
 class MassCalibrationError(ValueError):
-    """Raised when a run cannot prove both required internal mass anchors.
+    """Raised when a run cannot establish a trustworthy mass axis.
 
     Attributes:
         diagnostics:
@@ -82,7 +85,7 @@ class MassAxisCalibration:
 
     @property
     def applied(self):
-        """Whether both internal anchors produced an accepted correction."""
+        """Whether the Mapping or fallback internal calibration was accepted."""
         return bool(self.diagnostics.get("applied", False))
 
     def corrected_to_file(self, mass):
@@ -155,21 +158,25 @@ def _derive_reference_stability(anchors, scale, offset):
     output = []
     for anchor in anchors:
         target = float(anchor["target_mz"])
-        persistence = anchor["persistence"]
-        residuals = [
-            (scale * float(centre) + offset - target) / target * 1e6
+        persistence = anchor.get("persistence") or {}
+        centres = [
+            scale * float(centre) + offset
             for status, centre in zip(
-                persistence["statuses"], persistence["block_centres_file_mz"]
+                persistence.get("statuses", []),
+                persistence.get("block_centres_file_mz", []),
             )
             if status == "accepted" and centre is not None
         ]
-        values = np.asarray(residuals, dtype=np.float64)
+        if not centres:
+            continue
+        reference = float(np.median(centres))
+        values = (np.asarray(centres, dtype=np.float64) - reference) / reference * 1e6
         median = float(np.median(values))
         output.append(
             {
                 "name": anchor["name"],
                 "mz": target,
-                "n_blocks": len(residuals),
+                "n_blocks": len(centres),
                 "median_ppm": median,
                 "robust_sigma_ppm": float(
                     1.4826 * np.median(np.abs(values - median))
@@ -263,12 +270,12 @@ def _derive_formula_tolerance_model(f, a, b):
 
 
 def validate_mass_axis(mass_axis):
-    """Validate the complete evidence for an applied internal calibration.
+    """Validate the complete evidence for an accepted mass calibration.
 
     This is the trust boundary for axes passed between high-level operations. The
-    ``applied`` flag is not evidence by itself: the file coefficients, affine model,
-    exactly the two required anchors, their corrected endpoints, and their raw-cycle
-    persistence record must all agree.
+    ``applied`` flag is not evidence by itself: either authoritative multi-point Mapping
+    evidence or the legacy two-reference affine evidence must agree with the numerical
+    coefficients.
 
     Raises:
         MassCalibrationError:
@@ -305,7 +312,10 @@ def validate_mass_axis(mass_axis):
         fail("caller-supplied mass axis is not an applied internal calibration")
     if diagnostics.get("fallback_reason") is not None:
         fail("caller-supplied mass axis retains a fallback reason")
-    if diagnostics.get("model") != INTERNAL_MASS_CORRECTION_MODEL:
+    if diagnostics.get("model") not in {
+        INTERNAL_MASS_CORRECTION_MODEL,
+        MAPPING_AUTHORITY_MODEL,
+    }:
         fail("caller-supplied mass axis has an unsupported correction model")
 
     try:
@@ -351,6 +361,91 @@ def validate_mass_axis(mass_axis):
         atol=1e-12,
     ):
         fail("caller-supplied mass axis has contradictory calibration diagnostics")
+
+    if diagnostics.get("model") == MAPPING_AUTHORITY_MODEL:
+        try:
+            mapping = diagnostics["mapping_calibration"]
+            points = mapping["points"]
+            if (
+                diagnostics.get("algorithm_version") != MASS_AXIS_ALGORITHM_VERSION
+                or diagnostics.get("authority") != "CALdata/Mapping"
+                or diagnostics.get("mass_domain_correction_applied") is not False
+                or mass_axis.scale != 1.0
+                or mass_axis.offset != 0.0
+                or mapping.get("source") != "CALdata/Mapping"
+                or mapping.get("n_points") != len(points)
+                or len(points) < 3
+            ):
+                raise TypeError
+            masses = np.asarray([float(point["mz"]) for point in points])
+            timebins = np.asarray([float(point["timebin"]) for point in points])
+            residuals = np.asarray(
+                [float(point["residual_ppm"]) for point in points]
+            )
+            expected = (((timebins - file_b) / file_a) ** 2 - masses) / masses * 1e6
+            tolerance = diagnostics["formula_assignment_tolerance"]
+            tolerance_points = tolerance["calibration_points"]
+            tolerance_masses = np.asarray(
+                [float(point["mz"]) for point in tolerance_points]
+            )
+            tolerance_residuals = np.asarray(
+                [float(point["residual_ppm"]) for point in tolerance_points]
+            )
+            q95_abs = float(np.percentile(np.abs(residuals), 95.0))
+            accepted = q95_abs <= FORMULA_TOLERANCE_MAX_PPM
+            expected_tolerance = (
+                max(
+                    FORMULA_TOLERANCE_FLOOR_PPM,
+                    min(
+                        FORMULA_TOLERANCE_MAX_PPM,
+                        q95_abs + FORMULA_TOLERANCE_MARGIN_PPM,
+                    ),
+                )
+                if accepted
+                else FORMULA_TOLERANCE_MAX_PPM
+            )
+            if (
+                not np.isfinite([*masses, *timebins, *residuals]).all()
+                or not (masses > 0).all()
+                or not (timebins > 0).all()
+                or not np.all(np.diff(masses) > 0)
+                or not np.all(np.diff(timebins) > 0)
+                or not np.allclose(residuals, expected, rtol=0, atol=1e-9)
+                or np.any(
+                    np.abs(residuals) > MAPPING_MAX_RELATIVE_MASS_ERROR * 1e6
+                )
+                or tolerance.get("model") != FORMULA_TOLERANCE_MODEL
+                or tolerance.get("status")
+                != ("accepted" if accepted else "degraded")
+                or not np.isclose(
+                    float(tolerance["q95_abs_ppm"]), q95_abs, rtol=0, atol=1e-12
+                )
+                or not np.isclose(
+                    float(tolerance["tolerance_ppm"]),
+                    expected_tolerance,
+                    rtol=0,
+                    atol=1e-12,
+                )
+                or not np.isclose(
+                    float(tolerance["score_sigma_ppm"]),
+                    max(
+                        FORMULA_SCORE_SIGMA_FLOOR_PPM,
+                        expected_tolerance / 2.5,
+                    ),
+                    rtol=0,
+                    atol=1e-12,
+                )
+                or tolerance.get("candidate_generation_allowed") is not True
+                or tolerance.get("automatic_assignment_allowed") is not accepted
+                or not np.allclose(tolerance_masses, masses, rtol=0, atol=1e-9)
+                or not np.allclose(
+                    tolerance_residuals, residuals, rtol=0, atol=1e-9
+                )
+            ):
+                raise TypeError
+        except (KeyError, OverflowError, TypeError, ValueError):
+            fail("authoritative Mapping calibration evidence is contradictory")
+        return mass_axis
 
     required = {name: float(target) for name, target in INTERNAL_MASS_ANCHORS}
     anchors = diagnostics.get("anchors")
@@ -598,8 +693,95 @@ def mass_axis_from_dict(diagnostics):
     return validate_mass_axis(calibration)
 
 
+def _historical_axis_for_migration(config, mass_axis):
+    """Reconstruct the version-1 affine axis without applying version-2 rules."""
+    diagnostics = config.get("mass_axis_calibration")
+    if isinstance(diagnostics, dict):
+        try:
+            file_calibration = diagnostics["file_calibration"]
+            scale = float(diagnostics["scale"])
+            offset = float(diagnostics["offset_da"])
+            a = float(file_calibration["a"])
+            b = float(file_calibration["b"])
+            anchors = diagnostics["anchors"]
+            required = {name: float(target) for name, target in INTERNAL_MASS_ANCHORS}
+            if (
+                diagnostics.get("model") != INTERNAL_MASS_CORRECTION_MODEL
+                or diagnostics.get("applied") is not True
+                or file_calibration.get("model") != FILE_MASS_CALIBRATION_MODEL
+                or not np.isfinite([a, b, scale, offset]).all()
+                or a <= 0
+                or scale <= 0
+                or abs(scale - 1.0) > INTERNAL_MASS_SCALE_LIMIT
+                or abs(offset) > INTERNAL_MASS_OFFSET_LIMIT_DA
+                or not np.allclose(
+                    [a, b], [mass_axis.a, mass_axis.b], rtol=0, atol=1e-9
+                )
+                or not isinstance(anchors, list)
+                or {anchor.get("name") for anchor in anchors} != set(required)
+            ):
+                raise TypeError
+            for anchor in anchors:
+                observed = float(anchor["observed_file_mz"])
+                target = required[anchor["name"]]
+                if (
+                    anchor.get("status") != "accepted"
+                    or not np.isclose(
+                        scale * observed + offset, target, rtol=0, atol=1e-8
+                    )
+                ):
+                    raise TypeError
+            return MassAxisCalibration(a, b, scale=scale, offset=offset)
+        except (KeyError, OverflowError, TypeError, ValueError):
+            pass
+
+    anchors = mass_axis.diagnostics.get("anchors")
+    required = {name: float(target) for name, target in INTERNAL_MASS_ANCHORS}
+    try:
+        if (
+            not isinstance(anchors, list)
+            or {anchor.get("name") for anchor in anchors} != set(required)
+        ):
+            raise TypeError
+        observed = {}
+        for anchor in anchors:
+            persistence = anchor.get("persistence") or {}
+            if (
+                anchor.get("status") != "accepted"
+                or persistence.get("available") is not True
+                or float(persistence.get("fraction", 0.0))
+                < INTERNAL_ANCHOR_MIN_PERSISTENCE
+            ):
+                raise TypeError
+            observed[anchor["name"]] = float(anchor["observed_file_mz"])
+        observed_lo = observed[INTERNAL_MASS_ANCHORS[0][0]]
+        observed_hi = observed[INTERNAL_MASS_ANCHORS[1][0]]
+        target_lo = INTERNAL_MASS_ANCHORS[0][1]
+        target_hi = INTERNAL_MASS_ANCHORS[1][1]
+        scale = (target_hi - target_lo) / (observed_hi - observed_lo)
+        offset = target_lo - scale * observed_lo
+        if (
+            not np.isfinite([scale, offset]).all()
+            or scale <= 0
+            or abs(scale - 1.0) > INTERNAL_MASS_SCALE_LIMIT
+            or abs(offset) > INTERNAL_MASS_OFFSET_LIMIT_DA
+        ):
+            raise TypeError
+    except (KeyError, OverflowError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise ValueError(
+            "version-1 corrected config lacks reconstructable historical mass-axis "
+            "evidence"
+        ) from exc
+    return MassAxisCalibration(
+        mass_axis.a,
+        mass_axis.b,
+        scale=scale,
+        offset=offset,
+    )
+
+
 def migrate_config_mass_axis(config, mass_axis):
-    """Migrate an unmarked config from file masses to corrected masses.
+    """Migrate an unmarked or version-1 config onto the current mass axis.
 
     The migration is deliberately limited to the documented config schema. Unknown
     fields are copied unchanged so an agent's provenance and review notes survive.
@@ -616,19 +798,31 @@ def migrate_config_mass_axis(config, mass_axis):
     result = copy.deepcopy(config)
     domain = result.get("mass_axis_domain")
     version = result.get("mass_axis_version")
+    old_axis = None
     if domain is not None or version is not None:
-        if domain != MASS_AXIS_CONFIG_DOMAIN or version != MASS_AXIS_CONFIG_VERSION:
+        if domain != MASS_AXIS_CONFIG_DOMAIN or version not in {
+            1,
+            MASS_AXIS_CONFIG_VERSION,
+        }:
             raise ValueError(
                 "unsupported config mass axis marker: "
                 f"domain={domain!r}, version={version!r}"
             )
-        return result, False
+        if version == MASS_AXIS_CONFIG_VERSION:
+            return result, False
+        old_axis = _historical_axis_for_migration(result, mass_axis)
 
     def corrected(value):
-        return float(mass_axis.file_to_corrected(float(value)))
+        file_mass = (
+            old_axis.corrected_to_file(float(value))
+            if old_axis is not None
+            else float(value)
+        )
+        return float(mass_axis.file_to_corrected(file_mass))
 
     def width(value):
-        return float(value) * mass_axis.scale
+        old_scale = old_axis.scale if old_axis is not None else 1.0
+        return float(value) * mass_axis.scale / old_scale
 
     for peak in result.get("peaks", []):
         if not isinstance(peak, dict):
@@ -657,6 +851,7 @@ def migrate_config_mass_axis(config, mass_axis):
         analysis["primary_mz"] = corrected(analysis["primary_mz"])
     result["mass_axis_domain"] = MASS_AXIS_CONFIG_DOMAIN
     result["mass_axis_version"] = MASS_AXIS_CONFIG_VERSION
+    result["mass_axis_calibration"] = mass_axis.to_dict()
     return result, True
 
 
@@ -830,19 +1025,59 @@ def load_mass_cal(f):
     )
 
 
+def _authoritative_mapping_evidence(f, a, b):
+    """Return validated multi-point Mapping evidence matching ``a,b``, or None."""
+    if "CALdata/Mapping" not in f:
+        return None
+    try:
+        mapping = np.asarray(f["CALdata/Mapping"][:], dtype=np.float64)
+    except (OSError, TypeError, ValueError):
+        return None
+    if (
+        mapping.ndim != 2
+        or mapping.shape[0] < 3
+        or mapping.shape[1] != 2
+        or not np.isfinite(mapping).all()
+        or not (mapping > 0).all()
+    ):
+        return None
+    mapping = mapping[np.argsort(mapping[:, 0])]
+    masses = mapping[:, 0]
+    timebins = mapping[:, 1]
+    if not np.all(np.diff(masses) > 0) or not np.all(np.diff(timebins) > 0):
+        return None
+    inferred = ((timebins - float(b)) / float(a)) ** 2
+    residuals = (inferred - masses) / masses * 1e6
+    if (
+        not np.isfinite(residuals).all()
+        or np.any(np.abs(residuals) > MAPPING_MAX_RELATIVE_MASS_ERROR * 1e6)
+    ):
+        return None
+    return {
+        "source": "CALdata/Mapping",
+        "n_points": int(len(masses)),
+        "points": [
+            {
+                "mz": float(mass),
+                "timebin": float(timebin),
+                "residual_ppm": float(residual),
+            }
+            for mass, timebin, residual in zip(masses, timebins, residuals)
+        ],
+    }
+
+
 def load_mass_axis(f, *, progress=None, should_stop=None):
-    """Build the corrected mass axis from both required internal references.
+    """Build the mass axis from authoritative Mapping or fallback references.
 
     Args:
         progress (optional): Callback receiving a monotonic 0..1 calibration fraction.
         should_stop (optional): Callback polled between raw-cycle blocks.
 
-    The HDF5 ``a,b`` calibration remains the timebin mapping. Water-cluster and
-    iodobenzene centres are detected independently on that baseline axis; only two
-    accepted anchors enable ``m_corrected = scale*m_file + offset``. Any malformed,
-    missing, weak, ambiguous, or physically implausible result raises
-    :class:`MassCalibrationError`; silently using the HDF5 axis would make every
-    downstream absolute m/z value scientifically unsafe.
+    A valid Mapping with three or more points is authoritative and receives no second
+    mass-domain translation or scaling. Water-cluster and iodobenzene movement remains
+    diagnostic on that path. Exactly two Mapping points or Spectrum fallback retain the
+    mandatory two-reference ``m_corrected = scale*m_file + offset`` correction.
     """
     if progress is not None:
         progress(0.0)
@@ -868,8 +1103,13 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
             ],
         }
         raise MassCalibrationError(str(exc), diagnostics) from exc
+    mapping_evidence = _authoritative_mapping_evidence(f, a, b)
     base = {
         "model": INTERNAL_MASS_CORRECTION_MODEL,
+        "algorithm_version": MASS_AXIS_ALGORITHM_VERSION,
+        "authority": (
+            "CALdata/Mapping" if mapping_evidence is not None else "internal-affine"
+        ),
         "applied": False,
         "scale": 1.0,
         "offset_da": 0.0,
@@ -932,6 +1172,26 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
         should_stop=should_stop,
     )
     base["anchors"] = anchors
+    if mapping_evidence is not None:
+        base.update(
+            {
+                "model": MAPPING_AUTHORITY_MODEL,
+                "applied": True,
+                "scale": 1.0,
+                "offset_da": 0.0,
+                "fallback_reason": None,
+                "mass_domain_correction_applied": False,
+                "mapping_calibration": mapping_evidence,
+                "reference_stability": _derive_reference_stability(anchors, 1.0, 0.0),
+                "formula_assignment_tolerance": _derive_formula_tolerance_model(f, a, b),
+            }
+        )
+        calibration = MassAxisCalibration(a, b, diagnostics=base)
+        validate_mass_axis(calibration)
+        if progress is not None:
+            progress(1.0)
+        return calibration
+
     failures = [
         anchor
         for anchor in anchors
@@ -988,6 +1248,7 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
             "scale": float(scale),
             "offset_da": float(offset),
             "fallback_reason": None,
+            "mass_domain_correction_applied": True,
         }
     )
     for anchor in anchors:

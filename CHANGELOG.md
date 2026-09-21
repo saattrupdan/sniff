@@ -46,6 +46,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Valid three-or-more-point `CALdata/Mapping` fits are now authoritative mass axes.
+  Sniff no longer applies a second water-cluster/iodobenzene translation and scale that
+  could move those references hundreds of ppm after a single-digit-ppm Mapping fit.
+  Version-1 review coordinates migrate through their recorded historical transform so
+  they retain the same physical timebins.
 - Formula discovery now separates broad 200 ppm expert-review proposals from a
   run-validated 5–10 ppm assignment radius derived from independent Mapping residuals.
   Wider NIST/catalogue matches remain visible with their ppm errors but are never

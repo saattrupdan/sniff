@@ -584,7 +584,7 @@ def test_export_uses_the_admitted_request_snapshot(server, tmp_path, monkeypatch
         "peaks": [{"mz": 42.0}],
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
     later = {**clicked, "peaks": [{"mz": 99.0}]}
     jobs = []
@@ -1081,7 +1081,7 @@ def test_save_reload_and_close_preserve_the_latest_config(server, tmp_path):
             "peaks": [{"mz": 42.0, "label": "reloaded edit"}],
             "ranges": [],
             "mass_axis_domain": "corrected",
-            "mass_axis_version": 1,
+            "mass_axis_version": 2,
         }
         assert api.post(
             f"/save?version=10&page={first_token}&closing=1", edited
@@ -1134,7 +1134,7 @@ def test_stale_page_cannot_write_or_export_a_newly_opened_file(
         "peaks": [{"mz": 99.0}],
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
     analysed = mock.Mock()
     monkeypatch.setattr(app, "analyze_config_to_csv", analysed)
@@ -1165,7 +1165,7 @@ def test_save_rejects_a_body_that_is_not_a_config(server, tmp_path):
         "peaks": [{"mz": 1.0}],
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
     code, _ = api.post("/save", valid)
     assert code == 200
@@ -1283,7 +1283,7 @@ def test_routes_reserve_background_work_before_returning_accepted(
         "peaks": [{"mz": 42.0}],
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
     session.status = "ready"
     assert api.post("/export", session.config)[0] == 202
@@ -1395,7 +1395,7 @@ def test_export_uses_the_config_the_page_posted(server, tmp_path):
         "peaks": [{"mz": 99.0, "label": "edited by the reviewer"}],
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
     with mock.patch.object(app, "analyze_config_to_csv", side_effect=fake_analysis):
         code, _ = api.post("/export", edited)
@@ -1485,7 +1485,7 @@ def test_export_is_refused_while_one_is_running(server, tmp_path):
             "peaks": [{"mz": 1.0}],
             "ranges": [],
             "mass_axis_domain": "corrected",
-            "mass_axis_version": 1,
+            "mass_axis_version": 2,
         },
     )
     assert code == 409
@@ -1507,7 +1507,7 @@ def test_older_delayed_save_cannot_replace_the_close_time_snapshot(
     base = {
         "ranges": [],
         "mass_axis_domain": "corrected",
-        "mass_axis_version": 1,
+        "mass_axis_version": 2,
     }
     newer = {**base, "peaks": [{"mz": 2.0}]}
     older = {**base, "peaks": [{"mz": 1.0}]}

@@ -239,7 +239,7 @@ def test_old_config_migrates_absolute_masses_and_widths_once():
     assert changed_again is False
     assert again == migrated
     assert migrated["mass_axis_domain"] == "corrected"
-    assert migrated["mass_axis_version"] == 1
+    assert migrated["mass_axis_version"] == 2
     assert migrated["peaks"][0]["mz"] == pytest.approx(100.05)
     assert migrated["peaks"][0]["window"]["left"] == pytest.approx(0.10007)
     assert migrated["peaks"][0]["window"]["right"] == pytest.approx(0.20014)
@@ -270,8 +270,47 @@ def test_direct_cli_config_migration_persists_the_marker(tmp_path):
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert migrated == saved
     assert saved["mass_axis_domain"] == "corrected"
-    assert saved["mass_axis_version"] == 1
+    assert saved["mass_axis_version"] == 2
     assert saved["peaks"][0]["mz"] == pytest.approx(100.05)
+
+
+def test_version_one_config_preserves_timebins_on_axis_upgrade():
+    old_axis = valid_axis()
+    new_axis = valid_axis(scale=1.0, offset=0.0)
+    historical = old_axis.to_dict()
+    historical["reference_stability"] = {
+        "source": "historical target-relative values",
+        "references": [{"median_ppm": 123.0}],
+    }
+    old = {
+        "peaks": [{"mz": old_axis.file_to_corrected(100.0), "window": 0.2}],
+        "mass_axis_domain": "corrected",
+        "mass_axis_version": 1,
+        "mass_axis_calibration": historical,
+    }
+
+    migrated, changed = ptrms.migrate_config_mass_axis(old, new_axis)
+
+    assert changed is True
+    assert migrated["mass_axis_version"] == 2
+    assert migrated["peaks"][0]["mz"] == pytest.approx(100.0)
+    assert migrated["peaks"][0]["window"] == pytest.approx(0.2 / old_axis.scale)
+    assert migrated["mass_axis_calibration"] == new_axis.to_dict()
+
+
+def test_cacheless_version_one_config_reconstructs_historical_axis():
+    axis = valid_axis(scale=1.0, offset=0.0)
+    old = {
+        "peaks": [{"mz": 42.0, "formula": "C2H2O"}],
+        "mass_axis_domain": "corrected",
+        "mass_axis_version": 1,
+    }
+
+    migrated, changed = ptrms.migrate_config_mass_axis(old, axis)
+
+    assert changed is True
+    assert migrated["mass_axis_version"] == 2
+    assert migrated["peaks"] == old["peaks"]
 
 
 def test_identity_migration_only_adds_the_marker():
@@ -282,4 +321,4 @@ def test_identity_migration_only_adds_the_marker():
     assert changed is True
     assert migrated["peaks"] == old["peaks"]
     assert migrated["mass_axis_domain"] == "corrected"
-    assert migrated["mass_axis_version"] == 1
+    assert migrated["mass_axis_version"] == 2

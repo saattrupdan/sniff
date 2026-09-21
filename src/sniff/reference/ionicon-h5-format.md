@@ -72,38 +72,30 @@ case, invert the fit as:
 m/z = ((timebin − b) / a)²
 ```
 
-If `CALdata/Mapping` is absent or unusable, fall back to usable per-cycle
-`CALdata/Spectrum` coefficients. These `a,b` values remain the baseline timebin
-mapping; the internal correction does not pretend that a mass-domain translation can
-be represented by changing them.
+A valid Mapping with three or more rows is the authoritative axis. Its least-squares
+`a,b` fit and per-row residuals are retained as provenance, and no later mass-domain
+translation or scaling is applied. The run-average water-cluster and iodobenzene peaks
+may still be measured across cycle blocks, but their movement is a temporal-stability
+diagnostic only and cannot replace or modify the Mapping calibration.
 
-The run-average `SPECdata/AverageSpec` is sanitised by replacing non-finite and
-negative bins with zero. On the baseline file axis, Sniff searches conservatively for
-the operational water calibrant at 37.033 and protonated iodobenzene at 204.951.
-Each centre is refined to sub-bin precision and must pass local prominence, robust
-S/N, resolved-competitor, proximity and search-window checks. When raw spectra are
-available, the candidate must also persist in at least five of eight deterministic
-cycle blocks. Both anchors are mandatory: a missing, weak, ambiguous or implausible
-anchor raises a structured calibration error and the HDF5 axis is never used as a
-silent fallback. Their solution must be finite, monotonic, close to unit scale and
-limited in offset. The accepted mapping is:
+If `CALdata/Mapping` is absent or unusable, Sniff falls back to usable per-cycle
+`CALdata/Spectrum` coefficients. Exactly two Mapping rows follow the same fallback
+calibration path. In those cases only, the sanitised run-average spectrum must contain
+the operational water calibrant at 37.033 and protonated iodobenzene at 204.951. Their
+sub-bin centres must be prominent, high-S/N, unambiguous, conservatively positioned and
+persistent in at least five of eight deterministic cycle blocks. The accepted fallback
+mapping is:
 
 ```
 m_corrected = scale·m_file + offset
 m_file = (m_corrected − offset) / scale
 ```
 
-The forward mapping is used for timebin-to-mass displays and detected peaks; the
-inverse is used for target-to-timebin windows. The two accepted observed centres map
-exactly to 37.033 and 204.951, while every intermediate compound receives the same
-translation and scale. This replaces the former target-panel-derived multiplicative
-drift, avoiding a second correction whose value depended on the selected compounds.
-A failed anchor is reported with its status, reason, prominence/S/N and (when
-available) per-cycle-block persistence in the JSON error diagnostics. The 37.033
-peak is the operational calibrant; humidity calculations may use its water-cluster
-ratio, but that ratio is not a substitute for calibration evidence. Per-cycle
-`MassCal_a/b` also exist in `AddTraces/DataCollection`, but barely differ from the
-global fit in the examined files.
+A failed mandatory fallback anchor is reported with its status, reason, prominence/S/N
+and block persistence. Config schema version 2 migrates version-1 coordinates through
+their recorded old inverse transform, preserving the selected physical timebins while
+removing the obsolete second correction. Per-cycle `MassCal_a/b` also exist in
+`AddTraces/DataCollection`, but barely differ from the global fit in the examined files.
 
 Formula identification uses two deliberately different ppm limits. A broad 200 ppm
 window generates formula and catalogue proposals for expert investigation. With at

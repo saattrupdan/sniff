@@ -1547,7 +1547,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <p class="lead" style="font-size:11.5px">How this tool turns the raw IONICON <code>.h5</code> into the concentrations you review here. Everything instrument-specific is read from the file; you curate the chemistry.</p>
 
   <h3>1 · Mass calibration &amp; drift</h3>
-  <p>The instrument stores two or more calibration anchors in <code>CALdata/Mapping</code> giving <b>timebin = a·√(m<sub>file</sub>) + b</b>. Two anchors determine the coefficients directly; three or more valid, well-conditioned anchors are fit by least squares and accepted only when their reconstructed masses have finite absolute relative errors of at most 100 ppm. Invalid or physically inconsistent Mapping data falls back to usable per-cycle <code>CALdata/Spectrum</code> coefficients. On top of that file mapping, Sniff requires the operational water calibrant (37.033) and protonated iodobenzene (204.951) in the sanitised average spectrum with sub-bin centring. Both anchors must be prominent, high-S/N, unambiguous, conservatively positioned and persistent across raw cycle blocks when available; otherwise the analysis stops with structured calibration diagnostics rather than using the HDF5 axis. The separate correction is <b>m<sub>corrected</sub> = scale·m<sub>file</sub> + offset</b>, translating and scaling the whole axis independently of the selected compound panel. Each isolated peak retains a tight local apex refinement; clustered components stay at corrected theoretical model centres so they do not jump onto a neighbour.</p>
+  <p>The instrument stores two or more calibration references in <code>CALdata/Mapping</code> giving <b>timebin = a·√m + b</b>. Three or more valid, well-conditioned references are fit by least squares and form the authoritative mass axis; Sniff does not translate or scale that axis again. Their reconstructed residuals validate the formula-assignment radius. Measured water-cluster and iodobenzene movement is then a temporal-stability diagnostic only. Exactly two Mapping rows, or fallback <code>CALdata/Spectrum</code> coefficients, retain the legacy two-reference affine correction and require both operational references to be trustworthy. Each isolated peak retains a tight local apex refinement; clustered components stay at calibrated theoretical model centres so they do not jump onto a neighbour.</p>
 
   <h3>2 · Peak detection &amp; identification</h3>
   <p>Peaks are local maxima of the average spectrum above a relative-height threshold. For each, candidate <b>molecular formulas</b> are enumerated offline inside a broad 200 ppm proposal radius so an expert still receives useful leads. Three or more independent <code>CALdata/Mapping</code> reference residuals separately validate the run-specific assignment radius: at least 5 ppm and never more than 10 ppm. Only candidates inside that radius can be assigned automatically; wider matches remain visible as explicit reviewer hypotheses. Automatic assignment is withheld when the 95th-percentile calibration residual exceeds 10 ppm; broad proposals remain visible. With fewer than three references, broad proposals remain available but none are assigned automatically. Block-to-block movement of the two internal references is reported separately as temporal stability, not mistaken for mass accuracy. Candidates are ranked by three independent lines of evidence: ppm exact-mass error, the measured-vs-predicted <b>¹³C (M+1) and heteroatom (M+2, e.g. S/Cl) isotope pattern</b>, and plausibility (integer ring+double-bond equivalents, the nitrogen rule, element ratios). Near-isobars are told apart by composition, not "nearest mass". Names and isomer labels come from the bundled PTR Library mapping when the formula is known; formula ranking cannot determine structural isomers.</p>
@@ -1577,7 +1577,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <li><b>Single sensitivity K</b> unless per-compound kinetic mode is on; the shared-K assumption is only exact for compounds with similar reaction rate constants.</li>
     <li><b>Fragmentation evidence, not correction</b> — condition-matched PTR Library product ions and measured temporal co-variation can support and rerank an existing exact-mass formula proposal. They cannot create a candidate, override the run mass gate, or prove an isomer. Every channel is still quantified independently, so fragmenting compounds may read low.</li>
     <li><b>Humidity dependence</b> is an optional, empirical normalisation, not a full ion-chemistry model; leave it off unless you have reason to apply it.</li>
-    <li><b>Mass-axis correction needs both internal references</b> — if either water-cluster or iodobenzene is absent, weak, ambiguous or not persistent across raw cycles, Sniff stops with structured diagnostics rather than retaining an unsafe file calibration.</li>
+    <li><b>Mass-axis authority is explicit</b> — three or more valid Mapping references are authoritative. Only two-row Mapping and Spectrum fallback files require both internal water-cluster and iodobenzene references for an affine correction.</li>
     <li><b>Identification is a ranking, not proof</b>: candidate percentages are relative score/share, not calibrated identification confidence; unresolved overlaps are flagged and the expert makes the final call.</li>
   </ul>
 
@@ -3142,9 +3142,11 @@ function updateMethods(){
     ? rawInterests.filter(c=>c&&typeof c.name==='string'):[];
   const interestNames=interests.map(c=>htmlText(c.name)).join(', ');
   const mc=M.mass_axis_calibration||{applied:false,scale:1,offset_da:0,fallback_reason:"not reported"};
-  const massAxis=mc.applied
-    ? `applied; scale = ${Number(mc.scale).toFixed(9)}, offset = ${Number(mc.offset_da).toFixed(6)} Da; both internal anchors passed`
-    : `calibration unavailable; ${htmlText(mc.fallback_reason||"internal calibration did not pass")}`;
+  const massAxis=mc.authority==='CALdata/Mapping'
+    ? `authoritative ${Number((mc.mapping_calibration||{}).n_points||0)}-point CALdata/Mapping fit; no second mass-domain correction`
+    : mc.applied
+      ? `fallback affine correction applied; scale = ${Number(mc.scale).toFixed(9)}, offset = ${Number(mc.offset_da).toFixed(6)} Da; both internal anchors passed`
+      : `calibration unavailable; ${htmlText(mc.fallback_reason||"calibration did not pass")}`;
   const ft=mc.formula_assignment_tolerance||{};
   const massTolerance=ft.status==='accepted'
     ? `${Number(ft.tolerance_ppm).toFixed(1)} ppm from ${Number(ft.q95_abs_ppm).toFixed(1)} ppm 95th-percentile Mapping fit residual`

@@ -367,35 +367,30 @@ An analysis config may include an `analyze` object with `R`, `R_phys`, `K`,
 curated values: precedence is **CLI override > `analyze` config > legacy default**. The
 same resolver is used by `analyze`, browser initial state, live-save, and Done. Unknown
 top-level and nested config fields survive browser round trips. New detected and saved
-configs carry `mass_axis_domain: "corrected"` and `mass_axis_version: 1`. App-created
+configs carry `mass_axis_domain: "corrected"` and `mass_axis_version: 2`. App-created
 configs also retain the complete validated `mass_axis_calibration` evidence and an H5
 fingerprint. The app reuses that calibration only while the source file's stable
-identity, size and nanosecond timestamps still match. When an older unmarked config is
-opened, Sniff first proves both internal anchors, then migrates every saved absolute
-mass and mass width from the file axis exactly once and persists the marker; cycle
-ranges and unknown fields are unchanged.
+identity, size and nanosecond timestamps still match. When an older config is opened,
+Sniff maps every saved absolute mass and width through its recorded historical axis onto
+the new authoritative axis exactly once; cycle ranges, identities and unknown fields are
+unchanged.
 
-Before peak detection or extraction, Sniff requires an internal two-point mass-axis
-check. It detects the operational water calibrant at 37.033 and protonated iodobenzene
-at 204.951 in the sanitised run-average spectrum using the file's own HDF5 timebin
-calibration. Sub-bin centres must be prominent, high-S/N, unambiguous, within a
-conservative proximity window and persistent in at least five of eight deterministic
-raw-cycle blocks. Raw-cycle persistence is mandatory: files without a valid
-`SPECdata/Intensities` block set cannot be calibrated or analysed. The accepted
-correction is separate from the file's `a,b` coefficients:
-`m_corrected = scale*m_file + offset`, so it translates and scales the whole axis rather
-than moving only selected targets. If either mandatory anchor is missing, weak,
-ambiguous or implausible, analysis stops with a structured calibration error; it never
-silently falls back to the HDF5 axis. The 37.033 value is the operational calibration
-water peak; humidity-sensitive water-cluster ratios are reported separately and are not
-calibration evidence.
+Before peak detection or extraction, Sniff validates the file's mass-axis evidence. A
+valid `CALdata/Mapping` with three or more references is authoritative: Sniff fits
+`timebin = a*sqrt(m) + b` across all rows and does not subsequently translate or scale
+the mass axis. Measured water-cluster and iodobenzene movement is then reported only as
+a temporal-stability diagnostic. Exactly two Mapping rows, or a Spectrum-coefficient
+fallback, retain the legacy two-reference affine correction using 37.033 and 204.951;
+both references must then be prominent, unambiguous and persistent. This distinction
+prevents a second correction from damaging an already validated multi-point axis.
 
 Formula matching separates proposals from assignments. Sniff enumerates broad formula
 and catalogue proposals within 200 ppm, matching the library-annotation stage in
 [Mustafina et al. (2025)](https://doi.org/10.3390/diagnostics15212738), and shows their
 exact errors and catalogue names for expert investigation. Three or more independent
-`CALdata/Mapping` references separately validate a run-specific assignment radius from
-their 95th-percentile absolute fit residual plus a 2 ppm small-sample margin. The result
+`CALdata/Mapping` references define the authoritative axis and validate a run-specific
+assignment radius from their 95th-percentile absolute fit residual plus a 2 ppm
+small-sample margin. The result
 is bounded to 5–10 ppm, and its absolute mDa width therefore scales with each peak's m/z.
 Only proposals inside that radius can be assigned automatically; wider matches remain
 visible, explicitly provisional reviewer hypotheses. If the calibration residual exceeds

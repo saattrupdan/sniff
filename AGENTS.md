@@ -53,6 +53,10 @@ agent-facing contracts; `README.md` and the CLI remain the user documentation.
 - **Identification limits:** m/z and formula candidates are proposals, not proof of
   chemical identity. Preserve honest unknowns, report ambiguity and overlap, and do
   not present a library match or candidate score as a calibrated probability.
+- **Mass-axis authority:** a valid `CALdata/Mapping` with three or more references is
+  authoritative. Do not apply a second water-cluster/iodobenzene affine correction;
+  those measured peaks are temporal-stability diagnostics on this path. Two-row Mapping
+  and Spectrum fallback files retain the mandatory two-reference affine correction.
 - **Tolerance layers:** preserve the distinction between broad 200 ppm formula/name
   proposals for expert investigation and the run-validated 5–10 ppm assignment radius.
   Wider proposals stay visible but must never become automatic identities.
