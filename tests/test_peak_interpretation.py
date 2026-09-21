@@ -101,7 +101,7 @@ def test_peak_without_formula_candidate_gets_explicit_unresolved_interpretation(
     assert interpretation["kind"] == "unresolved"
     assert interpretation["label"] == "unresolved ion at m/z 41.0541"
     assert interpretation["evidence"] == [
-        "no plausible protonated-neutral formula fits within 12 mDa",
+        "no plausible protonated-neutral formula fits the current exact-mass tolerance",
         "the peak overlaps a neighbouring channel",
     ]
 
@@ -150,7 +150,7 @@ def test_ptr_fixture_has_candidate_or_interpretation_for_every_peak():
         assign_all_library=True,
     )
 
-    assert sum(bool(peak["candidates"]) for peak in peaks) >= 80
+    assert sum(bool(peak["candidates"]) for peak in peaks) >= 35
     assert all(
         peak.get("candidates") or peak.get("interpretation_candidates")
         for peak in peaks

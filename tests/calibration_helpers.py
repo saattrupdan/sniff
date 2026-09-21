@@ -1,60 +1,82 @@
-"""Explicit calibration doubles for synthetic tests."""
+"""Reusable mass-calibration fixtures."""
 
 from sniff import ptrms
 
 
 def identity_mass_axis(a=10.0, b=1.0):
     """Return a deliberately explicit identity correction for tiny fixtures."""
-    return ptrms.MassAxisCalibration(
-        a,
-        b,
-        diagnostics={
-            "model": "m_corrected = scale*m_file + offset",
-            "applied": True,
-            "scale": 1.0,
-            "offset_da": 0.0,
-            "file_calibration": {
-                "model": "timebin = a*sqrt(m_file) + b",
-                "a": float(a),
-                "b": float(b),
+    anchors = [
+        {
+            "name": "water_cluster",
+            "target_mz": 37.033,
+            "status": "accepted",
+            "reason": "",
+            "observed_file_mz": 37.033,
+            "corrected_mz": 37.033,
+            "timebin": a * 37.033**0.5 + b,
+            "prominence": 100.0,
+            "snr": 100.0,
+            "persistence": {
+                "available": True,
+                "blocks": 8,
+                "accepted_blocks": 8,
+                "fraction": 1.0,
+                "statuses": ["accepted"] * 8,
+                "block_centres_file_mz": [37.033] * 8,
             },
-            "anchors": [
-                {
-                    "name": "water_cluster",
-                    "target_mz": 37.033,
-                    "status": "accepted",
-                    "reason": "",
-                    "observed_file_mz": 37.033,
-                    "corrected_mz": 37.033,
-                    "timebin": a * 37.033**0.5 + b,
-                    "prominence": 100.0,
-                    "snr": 100.0,
-                    "persistence": {
-                        "available": True,
-                        "blocks": 8,
-                        "accepted_blocks": 8,
-                        "fraction": 1.0,
-                        "statuses": ["accepted"] * 8,
-                    },
-                },
-                {
-                    "name": "iodobenzene",
-                    "target_mz": 204.951,
-                    "status": "accepted",
-                    "reason": "",
-                    "observed_file_mz": 204.951,
-                    "corrected_mz": 204.951,
-                    "timebin": a * 204.951**0.5 + b,
-                    "prominence": 100.0,
-                    "snr": 100.0,
-                    "persistence": {
-                        "available": True,
-                        "blocks": 8,
-                        "accepted_blocks": 8,
-                        "fraction": 1.0,
-                        "statuses": ["accepted"] * 8,
-                    },
-                },
+        },
+        {
+            "name": "iodobenzene",
+            "target_mz": 204.951,
+            "status": "accepted",
+            "reason": "",
+            "observed_file_mz": 204.951,
+            "corrected_mz": 204.951,
+            "timebin": a * 204.951**0.5 + b,
+            "prominence": 100.0,
+            "snr": 100.0,
+            "persistence": {
+                "available": True,
+                "blocks": 8,
+                "accepted_blocks": 8,
+                "fraction": 1.0,
+                "statuses": ["accepted"] * 8,
+                "block_centres_file_mz": [204.951] * 8,
+            },
+        },
+    ]
+    diagnostics = {
+        "model": "m_corrected = scale*m_file + offset",
+        "applied": True,
+        "scale": 1.0,
+        "offset_da": 0.0,
+        "fallback_reason": None,
+        "file_calibration": {
+            "model": "timebin = a*sqrt(m_file) + b",
+            "a": float(a),
+            "b": float(b),
+        },
+        "anchors": anchors,
+        "formula_assignment_tolerance": {
+            "model": ptrms.FORMULA_TOLERANCE_MODEL,
+            "source": "synthetic exact calibration references",
+            "status": "accepted",
+            "reason": None,
+            "mass_error_convention": (
+                "1e6 * (observed - theoretical) / theoretical"
+            ),
+            "minimum_ppm": ptrms.FORMULA_TOLERANCE_FLOOR_PPM,
+            "maximum_ppm": ptrms.FORMULA_TOLERANCE_MAX_PPM,
+            "q95_abs_ppm": 0.0,
+            "tolerance_ppm": ptrms.FORMULA_TOLERANCE_FLOOR_PPM,
+            "score_sigma_ppm": ptrms.FORMULA_SCORE_SIGMA_FLOOR_PPM,
+            "candidate_generation_allowed": True,
+            "automatic_assignment_allowed": True,
+            "calibration_points": [
+                {"mz": 37.033, "residual_ppm": 0.0},
+                {"mz": 100.0, "residual_ppm": 0.0},
+                {"mz": 204.951, "residual_ppm": 0.0},
             ],
         },
-    )
+    }
+    return ptrms.MassAxisCalibration(a, b, diagnostics=diagnostics)

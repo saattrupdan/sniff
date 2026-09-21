@@ -45,6 +45,13 @@ INTERNAL_ANCHOR_PROXIMITY_DA = 0.025
 INTERNAL_MASS_SCALE_LIMIT = 0.005
 INTERNAL_MASS_OFFSET_LIMIT_DA = 0.25
 
+FORMULA_TOLERANCE_MODEL = "run-calibration-residuals-v1"
+FORMULA_TOLERANCE_FLOOR_PPM = 5.0
+FORMULA_TOLERANCE_MAX_PPM = 10.0
+FORMULA_TOLERANCE_MARGIN_PPM = 2.0
+FORMULA_PROPOSAL_TOLERANCE_PPM = 200.0
+FORMULA_SCORE_SIGMA_FLOOR_PPM = 2.0
+
 
 MASS_AXIS_CONFIG_DOMAIN = "corrected"
 MASS_AXIS_CONFIG_VERSION = 1
@@ -98,6 +105,161 @@ class MassAxisCalibration:
     def to_dict(self):
         """Return deterministic JSON-safe calibration provenance."""
         return dict(self.diagnostics)
+
+
+def formula_assignment_tolerance(mass_axis, mz):
+    """Return the run-validated ppm exact-mass tolerance at one ion m/z.
+
+    A ppm radius naturally expands in mDa with m/z. Three or more independent file
+    calibration references validate a 5-10 ppm run-specific radius. Files without
+    independent residuals retain conservative review candidates at 10 ppm. When a
+    run exceeds 10 ppm, all broad candidates remain reviewer proposals only.
+    """
+    validate_mass_axis(mass_axis)
+    ion_mz = float(mz)
+    if not np.isfinite(ion_mz) or ion_mz <= 0:
+        raise ValueError("formula-assignment m/z must be finite and positive")
+    model = mass_axis.diagnostics.get("formula_assignment_tolerance")
+    if not isinstance(model, dict) or model.get("model") != FORMULA_TOLERANCE_MODEL:
+        model = {
+            "model": "legacy-conservative-fallback",
+            "source": "saved calibration lacks independent residual evidence",
+            "status": "fallback",
+            "tolerance_ppm": FORMULA_TOLERANCE_MAX_PPM,
+            "score_sigma_ppm": FORMULA_TOLERANCE_MAX_PPM / 2.5,
+            "candidate_generation_allowed": True,
+            "automatic_assignment_allowed": False,
+        }
+    tolerance_ppm = float(model["tolerance_ppm"])
+    return {
+        "model": model["model"],
+        "source": model["source"],
+        "status": model["status"],
+        "reason": model.get("reason"),
+        "ppm": tolerance_ppm,
+        "mDa": tolerance_ppm * ion_mz / 1000.0,
+        "proposal_ppm": FORMULA_PROPOSAL_TOLERANCE_PPM,
+        "proposal_mDa": FORMULA_PROPOSAL_TOLERANCE_PPM * ion_mz / 1000.0,
+        "score_sigma_ppm": float(model["score_sigma_ppm"]),
+        "candidate_generation_allowed": bool(
+            model["candidate_generation_allowed"]
+        ),
+        "automatic_assignment_allowed": bool(
+            model["automatic_assignment_allowed"]
+        ),
+    }
+
+
+def _derive_reference_stability(anchors, scale, offset):
+    """Summarise temporal reference movement without treating it as mass accuracy."""
+    output = []
+    for anchor in anchors:
+        target = float(anchor["target_mz"])
+        persistence = anchor["persistence"]
+        residuals = [
+            (scale * float(centre) + offset - target) / target * 1e6
+            for status, centre in zip(
+                persistence["statuses"], persistence["block_centres_file_mz"]
+            )
+            if status == "accepted" and centre is not None
+        ]
+        values = np.asarray(residuals, dtype=np.float64)
+        median = float(np.median(values))
+        output.append(
+            {
+                "name": anchor["name"],
+                "mz": target,
+                "n_blocks": len(residuals),
+                "median_ppm": median,
+                "robust_sigma_ppm": float(
+                    1.4826 * np.median(np.abs(values - median))
+                ),
+                "max_abs_ppm": float(np.max(np.abs(values))),
+            }
+        )
+    return {
+        "source": "accepted internal-reference block centres",
+        "interpretation": "temporal stability diagnostic, not mass-accuracy evidence",
+        "references": output,
+    }
+
+
+def _derive_formula_tolerance_model(f, a, b):
+    """Validate a 5-10 ppm radius against independent Mapping residuals."""
+    try:
+        mapping = np.asarray(f["CALdata/Mapping"][:], dtype=np.float64)
+    except (KeyError, OSError, TypeError, ValueError):
+        mapping = None
+    points = []
+    if (
+        mapping is not None
+        and mapping.ndim == 2
+        and mapping.shape[0] >= 3
+        and mapping.shape[1] == 2
+        and np.isfinite(mapping).all()
+        and (mapping > 0).all()
+    ):
+        mapping = mapping[np.argsort(mapping[:, 0])]
+        masses = mapping[:, 0]
+        timebins = mapping[:, 1]
+        if np.all(np.diff(masses) > 0) and np.all(np.diff(timebins) > 0):
+            fitted_masses = ((timebins - b) / a) ** 2
+            residuals = (fitted_masses - masses) / masses * 1e6
+            if np.isfinite(residuals).all():
+                points = [
+                    {"mz": float(mass), "residual_ppm": float(residual)}
+                    for mass, residual in zip(masses, residuals)
+                ]
+    if not points:
+        return {
+            "model": FORMULA_TOLERANCE_MODEL,
+            "source": "no independent multi-point Mapping residuals",
+            "status": "fallback",
+            "reason": "fewer than three usable independent calibration references",
+            "mass_error_convention": "1e6 * (observed - theoretical) / theoretical",
+            "minimum_ppm": FORMULA_TOLERANCE_FLOOR_PPM,
+            "maximum_ppm": FORMULA_TOLERANCE_MAX_PPM,
+            "safety_margin_ppm": FORMULA_TOLERANCE_MARGIN_PPM,
+            "tolerance_ppm": FORMULA_TOLERANCE_MAX_PPM,
+            "score_sigma_ppm": FORMULA_TOLERANCE_MAX_PPM / 2.5,
+            "candidate_generation_allowed": True,
+            "automatic_assignment_allowed": False,
+            "calibration_points": [],
+        }
+    absolute = np.abs([point["residual_ppm"] for point in points])
+    q95_abs = float(np.percentile(absolute, 95.0))
+    accepted = q95_abs <= FORMULA_TOLERANCE_MAX_PPM
+    tolerance_ppm = (
+        max(
+            FORMULA_TOLERANCE_FLOOR_PPM,
+            min(FORMULA_TOLERANCE_MAX_PPM, q95_abs + FORMULA_TOLERANCE_MARGIN_PPM),
+        )
+        if accepted
+        else FORMULA_TOLERANCE_MAX_PPM
+    )
+    return {
+        "model": FORMULA_TOLERANCE_MODEL,
+        "source": "independent CALdata/Mapping fit residuals",
+        "status": "accepted" if accepted else "degraded",
+        "reason": (
+            None
+            if accepted
+            else f"95th-percentile calibration residual {q95_abs:.2f} ppm exceeds "
+            f"the {FORMULA_TOLERANCE_MAX_PPM:.0f} ppm assignment limit"
+        ),
+        "mass_error_convention": "1e6 * (observed - theoretical) / theoretical",
+        "minimum_ppm": FORMULA_TOLERANCE_FLOOR_PPM,
+        "maximum_ppm": FORMULA_TOLERANCE_MAX_PPM,
+        "safety_margin_ppm": FORMULA_TOLERANCE_MARGIN_PPM,
+        "q95_abs_ppm": q95_abs,
+        "tolerance_ppm": tolerance_ppm,
+        "score_sigma_ppm": max(
+            FORMULA_SCORE_SIGMA_FLOOR_PPM, tolerance_ppm / 2.5
+        ),
+        "candidate_generation_allowed": True,
+        "automatic_assignment_allowed": accepted,
+        "calibration_points": points,
+    }
 
 
 def validate_mass_axis(mass_axis):
@@ -310,6 +472,105 @@ def validate_mass_axis(mass_axis):
             or fraction < INTERNAL_ANCHOR_MIN_PERSISTENCE
         ):
             fail(f"{name} anchor persistence evidence is contradictory")
+
+    tolerance_model = diagnostics.get("formula_assignment_tolerance")
+    stability = diagnostics.get("reference_stability")
+    if tolerance_model is not None or stability is not None:
+        try:
+            for anchor in anchors:
+                persistence = anchor["persistence"]
+                statuses = persistence["statuses"]
+                centres = persistence["block_centres_file_mz"]
+                if not isinstance(centres, list) or len(centres) != len(statuses):
+                    raise TypeError
+                for status, centre in zip(statuses, centres):
+                    if status == "accepted":
+                        if not numeric(centre) or not np.isfinite(centre) or centre <= 0:
+                            raise TypeError
+                    elif centre is not None:
+                        raise TypeError
+            expected_stability = _derive_reference_stability(
+                anchors, mass_axis.scale, mass_axis.offset
+            )
+        except (KeyError, OverflowError, TypeError, ValueError):
+            fail("formula-assignment calibration evidence is malformed")
+        if stability is not None and stability != expected_stability:
+            fail("reference-stability evidence is contradictory")
+    if tolerance_model is not None:
+        try:
+            if tolerance_model["model"] != FORMULA_TOLERANCE_MODEL:
+                raise TypeError
+            status = tolerance_model["status"]
+            tolerance_ppm = float(tolerance_model["tolerance_ppm"])
+            sigma_ppm = float(tolerance_model["score_sigma_ppm"])
+            points = tolerance_model["calibration_points"]
+            if (
+                status not in {"accepted", "degraded", "fallback"}
+                or not isinstance(points, list)
+                or not np.isfinite([tolerance_ppm, sigma_ppm]).all()
+                or not FORMULA_TOLERANCE_FLOOR_PPM
+                <= tolerance_ppm
+                <= FORMULA_TOLERANCE_MAX_PPM
+                or sigma_ppm <= 0
+            ):
+                raise TypeError
+            if status == "fallback":
+                valid = (
+                    not points
+                    and tolerance_ppm == FORMULA_TOLERANCE_MAX_PPM
+                    and sigma_ppm
+                    == FORMULA_TOLERANCE_MAX_PPM / 2.5
+                    and tolerance_model["candidate_generation_allowed"] is True
+                    and tolerance_model["automatic_assignment_allowed"] is False
+                )
+            else:
+                residuals = np.asarray(
+                    [float(point["residual_ppm"]) for point in points],
+                    dtype=np.float64,
+                )
+                masses = np.asarray(
+                    [float(point["mz"]) for point in points], dtype=np.float64
+                )
+                q95_abs = float(np.percentile(np.abs(residuals), 95.0))
+                accepted = q95_abs <= FORMULA_TOLERANCE_MAX_PPM
+                expected_tolerance = (
+                    max(
+                        FORMULA_TOLERANCE_FLOOR_PPM,
+                        min(
+                            FORMULA_TOLERANCE_MAX_PPM,
+                            q95_abs + FORMULA_TOLERANCE_MARGIN_PPM,
+                        ),
+                    )
+                    if accepted
+                    else FORMULA_TOLERANCE_MAX_PPM
+                )
+                valid = (
+                    len(points) >= 3
+                    and np.isfinite(residuals).all()
+                    and np.isfinite(masses).all()
+                    and (masses > 0).all()
+                    and np.all(np.diff(masses) > 0)
+                    and np.isclose(
+                        float(tolerance_model["q95_abs_ppm"]),
+                        q95_abs,
+                        rtol=0,
+                        atol=1e-12,
+                    )
+                    and np.isclose(tolerance_ppm, expected_tolerance, rtol=0, atol=1e-12)
+                    and np.isclose(
+                        sigma_ppm,
+                        max(FORMULA_SCORE_SIGMA_FLOOR_PPM, tolerance_ppm / 2.5),
+                        rtol=0,
+                        atol=1e-12,
+                    )
+                    and (status == "accepted") == accepted
+                    and tolerance_model["candidate_generation_allowed"] is True
+                    and tolerance_model["automatic_assignment_allowed"] is accepted
+                )
+            if not valid:
+                raise TypeError
+        except (KeyError, OverflowError, TypeError, ValueError):
+            fail("formula-assignment tolerance evidence is contradictory")
     return mass_axis
 
 
@@ -731,6 +992,10 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
     )
     for anchor in anchors:
         anchor["corrected_mz"] = float(scale * anchor["observed_file_mz"] + offset)
+    base["reference_stability"] = _derive_reference_stability(
+        anchors, scale, offset
+    )
+    base["formula_assignment_tolerance"] = _derive_formula_tolerance_model(f, a, b)
     calibration = MassAxisCalibration(
         a, b, scale=scale, offset=offset, diagnostics=base
     )
@@ -771,6 +1036,7 @@ def _add_anchor_persistence(f, avg, a, b, anchors, *, progress=None, should_stop
     block_count = min(INTERNAL_ANCHOR_BLOCKS, ncyc)
     edges = np.linspace(0, ncyc, block_count + 1, dtype=int)
     statuses = {anchor["name"]: [] for anchor in anchors}
+    block_centres = {anchor["name"]: [] for anchor in anchors}
     windows = {}
     for anchor in anchors:
         target = float(anchor["target_mz"])
@@ -792,10 +1058,12 @@ def _add_anchor_persistence(f, avg, a, b, anchors, *, progress=None, should_stop
             name = anchor["name"]
             if anchor["status"] != "accepted":
                 statuses[name].append("missing")
+                block_centres[name].append(None)
                 continue
             tlo, thi = windows[name]
             if thi <= tlo:
                 statuses[name].append("missing")
+                block_centres[name].append(None)
                 continue
             try:
                 window = np.asarray(dataset[start:end, tlo : thi + 1], dtype=np.float64)
@@ -807,6 +1075,7 @@ def _add_anchor_persistence(f, avg, a, b, anchors, *, progress=None, should_stop
             usable_totals[name] += int(usable_rows.sum())
             if not usable_rows.any():
                 statuses[name].append("missing")
+                block_centres[name].append(None)
                 continue
 
             usable = window[usable_rows]
@@ -829,6 +1098,11 @@ def _add_anchor_persistence(f, avg, a, b, anchors, *, progress=None, should_stop
                 target_mz=float(anchor["target_mz"]),
             )
             statuses[name].append(candidate["status"])
+            block_centres[name].append(
+                candidate.get("observed_file_mz")
+                if candidate["status"] == "accepted"
+                else None
+            )
         if reason is not None:
             break
         if progress is not None:
@@ -861,6 +1135,7 @@ def _add_anchor_persistence(f, avg, a, b, anchors, *, progress=None, should_stop
             "accepted_blocks": accepted,
             "fraction": float(fraction),
             "statuses": block_statuses,
+            "block_centres_file_mz": block_centres[name],
         }
         if (
             anchor["status"] == "accepted"

@@ -337,12 +337,15 @@ def score_peak(
     mz,
     drift,
     obs_ratios=None,
-    tol_mDa=12.0,
+    tol_mDa=None,
     max_candidates=5,
     elements=None,
     compounds_of_interest=None,
     extra_formulas=None,
     enumerate_candidates=True,
+    tolerance_ppm=10.0,
+    mass_sigma_ppm=None,
+    proposal_tolerance_ppm=200.0,
 ):
     """Rank candidate formulas for a detected product ion at m/z.
 
@@ -362,8 +365,28 @@ def score_peak(
         formula = compound["formula"]
         name = compound["name"]
         interest_by_formula.setdefault(formula, []).append(name)
-    neutral = mz / drift - PROTON
-    tol = tol_mDa / 1000.0
+    observed_ion_mz = mz / drift
+    neutral = observed_ion_mz - PROTON
+    if tol_mDa is not None:
+        tol = float(tol_mDa) / 1000.0
+        effective_tolerance_ppm = tol / observed_ion_mz * 1e6
+        effective_proposal_ppm = effective_tolerance_ppm
+    else:
+        effective_tolerance_ppm = float(tolerance_ppm)
+        effective_proposal_ppm = float(proposal_tolerance_ppm)
+        tol = observed_ion_mz * effective_proposal_ppm / 1e6
+    if (
+        effective_tolerance_ppm <= 0
+        or not math.isfinite(effective_tolerance_ppm)
+        or effective_proposal_ppm < effective_tolerance_ppm
+        or not math.isfinite(effective_proposal_ppm)
+    ):
+        raise ValueError("formula tolerances must be finite, positive, and ordered")
+    if mass_sigma_ppm is None:
+        mass_sigma_ppm = max(2.0, effective_tolerance_ppm / 2.5)
+    mass_sigma_ppm = float(mass_sigma_ppm)
+    if mass_sigma_ppm <= 0 or not math.isfinite(mass_sigma_ppm):
+        raise ValueError("formula mass score sigma must be finite and positive")
     cands = (
         enumerate_formulas(neutral, tol, elements=elements)
         if enumerate_candidates
@@ -391,8 +414,15 @@ def score_peak(
     scored = []
     for counts, m in cands:
         ion_mz = m + PROTON
-        delta_mDa = (mz / drift - ion_mz) * 1000.0
-        p_mass = math.exp(-0.5 * (delta_mDa / 5.0) ** 2)  # ~5 mDa accuracy
+        delta_mDa = (observed_ion_mz - ion_mz) * 1000.0
+        delta_ppm = (observed_ion_mz - ion_mz) / ion_mz * 1e6
+        if abs(delta_ppm) > effective_proposal_ppm:
+            continue
+        mass_consistent = abs(delta_ppm) <= effective_tolerance_ppm
+        proposal_sigma_ppm = max(mass_sigma_ppm, effective_proposal_ppm / 3.0)
+        p_mass = math.exp(-0.5 * (delta_ppm / proposal_sigma_ppm) ** 2)
+        if not mass_consistent:
+            p_mass *= 0.1
         r1p, r2p = isotope_ratios(counts)
         p_iso = 1.0
         iso_used = False
@@ -434,6 +464,13 @@ def score_peak(
                 **({"preferred_name": preferred_name} if preferred_name else {}),
                 "ion_mz": round(ion_mz, 4),
                 "delta_mDa": round(delta_mDa, 1),
+                "delta_ppm": round(delta_ppm, 2),
+                "mass_match": (
+                    "within-run-tolerance"
+                    if mass_consistent
+                    else "broad-proposal-only"
+                ),
+                "assignment_eligible": mass_consistent,
                 "dbe": round(dbe(counts), 1),
                 "k": known.get("k") if known else None,
                 "k_estimated": (known.get("k_estimated", False) if known else True),
@@ -458,8 +495,21 @@ def score_peak(
                 "score": score,
             }
         )
-    scored.sort(key=lambda c: c["score"], reverse=True)
-    top = scored[:max_candidates]
+    scored.sort(
+        key=lambda candidate: (
+            candidate["assignment_eligible"], candidate["score"]
+        ),
+        reverse=True,
+    )
+    eligible = [candidate for candidate in scored if candidate["assignment_eligible"]]
+    proposals = [
+        candidate for candidate in scored if not candidate["assignment_eligible"]
+    ]
+    top = eligible[:max_candidates]
+    if eligible:
+        top.extend(proposals[:2])
+    else:
+        top = proposals[:max_candidates]
     tot = sum(c["score"] for c in top) or 1.0
     for c in top:
         c["probability"] = round(c["score"] / tot, 3)

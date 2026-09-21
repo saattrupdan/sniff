@@ -41,6 +41,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Formula discovery now separates broad 200 ppm expert-review proposals from a
+  run-validated 5–10 ppm assignment radius derived from independent Mapping residuals.
+  Wider NIST/catalogue matches remain visible with their ppm errors but are never
+  assigned automatically; poor calibration leaves every result as a proposal rather than
+  widening the scientific acceptance boundary.
 - Fresh app reviews now fill remaining identity blanks after trace extraction refines
   the measured peak apex. Reagent markers claim only their nearest peak within 12 mDa.
   The former vague m/z 30.994 O₂⁺/NO⁺ region label is now the specific NO⁺ (¹⁵N)

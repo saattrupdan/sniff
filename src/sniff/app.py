@@ -185,8 +185,18 @@ def _cached_mass_axis(config, fingerprint):
         or config.get("mass_axis_h5_fingerprint") != fingerprint
     ):
         return None
+    diagnostics = config.get("mass_axis_calibration")
+    tolerance = (
+        diagnostics.get("formula_assignment_tolerance")
+        if isinstance(diagnostics, dict)
+        else None
+    )
+    if not isinstance(tolerance, dict) or tolerance.get("model") != (
+        ptrms.FORMULA_TOLERANCE_MODEL
+    ):
+        return None
     try:
-        return ptrms.mass_axis_from_dict(config.get("mass_axis_calibration"))
+        return ptrms.mass_axis_from_dict(diagnostics)
     except ptrms.MassCalibrationError:
         return None
 

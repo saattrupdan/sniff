@@ -390,6 +390,21 @@ silently falls back to the HDF5 axis. The 37.033 value is the operational calibr
 water peak; humidity-sensitive water-cluster ratios are reported separately and are not
 calibration evidence.
 
+Formula matching separates proposals from assignments. Sniff enumerates broad formula
+and catalogue proposals within 200 ppm, matching the library-annotation stage in
+[Mustafina et al. (2025)](https://doi.org/10.3390/diagnostics15212738), and shows their
+exact errors and catalogue names for expert investigation. Three or more independent
+`CALdata/Mapping` references separately validate a run-specific assignment radius from
+their 95th-percentile absolute fit residual plus a 2 ppm small-sample margin. The result
+is bounded to 5–10 ppm, and its absolute mDa width therefore scales with each peak's m/z.
+Only proposals inside that radius can be assigned automatically; wider matches remain
+visible, explicitly provisional reviewer hypotheses. If the calibration residual exceeds
+10 ppm, broad proposals remain available but automatic assignment is withheld instead
+of manufacturing confidence. Files with fewer than three references retain 200 ppm
+review proposals but Sniff does not assign them automatically. Internal-reference
+movement across cycle blocks is reported separately as temporal stability; it is not
+treated as mass-accuracy evidence.
+
 By default `analyze` integrates each interval with each isolated peak's apex/window
 **re-centred on that interval's own spectrum** — peaks drift between intervals (a
 compound may be absent in a background), so one whole-run window sits off-peak
@@ -482,13 +497,15 @@ them by exact-mass error, the measured vs predicted ¹³C(M+1)/heteroatom(M+2, e
 isotope pattern, plausibility (integer DBE, nitrogen rule, element ratios), and any
 declared contextual prior — so near-isobars are told apart by composition, not "nearest
 mass". The bundled compound catalogue supplements that formula space only inside the
-same corrected 12 mDa neutral-mass window, with every formula and exact mass recomputed
-locally. Charged, isotope-labelled, radical, polymeric, malformed and unsupported
-WebBook species are excluded during catalogue generation.
+same 200 ppm proposal window, with every formula and exact mass recomputed locally. Each
+candidate states whether it also fits the run-validated 5–10 ppm assignment radius.
+Charged, isotope-labelled, radical, polymeric, malformed and unsupported WebBook species
+are excluded during catalogue generation.
 
-New app reviews use those rankings to give every candidate-backed peak an editable
-chemical default: a preferred or canonical PTR Library name when available, otherwise
-the best candidate formula. A global match assigns each formula family at most once and
+New app reviews use those rankings to give every mass-consistent candidate-backed peak
+an editable chemical default: a preferred or canonical PTR Library name when available,
+otherwise the best candidate formula. Wider proposals remain visible for explicit
+reviewer selection but never become automatic defaults. A global match assigns each formula family at most once and
 lets a conflicting peak use its next-best available candidate. After extracting the
 review traces, the app repeats this step with refined measured apexes and fills only
 fresh-review blanks. The review continues to show ambiguity, score shares and
@@ -510,10 +527,11 @@ doi.org/10.1007/s13361-019-02209-3; tinyurl.com/PTRLibrary), with measured k whe
 available (else Su-Chesnavich capture-theory k, flagged `k_estimated`), plus proton
 affinity, isomer names, and fragmentation flags. Use `sniff rates` to browse the bundled
 values. An empty formula-candidate list means that no plausible protonated-neutral
-composition fits the measured m/z within the 12 mDa exact-mass tolerance, including
-catalogue formulae outside the local enumerator's usual bounds. The accompanying
-interpretation explains that the channel may instead be a reagent or inorganic ion,
-isotope, fragment, unresolved interference, noise peak, or a mass-calibration mismatch.
+composition fits the measured m/z even within the 200 ppm proposal radius, including
+catalogue formulae outside the local enumerator's usual bounds, or that formula
+generation could not run. The accompanying interpretation explains that the channel may
+instead be a reagent or inorganic ion, isotope, fragment, unresolved interference, noise
+peak, or a mass-calibration mismatch.
 Accepting a formula automatically derives its exact natural M+1 and M+2 auxiliary
 channels. These support expected/observed isotope diagnostics and guarded subtraction
 when a lower-mass compound's isotope overlaps another assigned parent. They do not

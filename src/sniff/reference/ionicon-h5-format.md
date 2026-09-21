@@ -105,6 +105,17 @@ ratio, but that ratio is not a substitute for calibration evidence. Per-cycle
 `MassCal_a/b` also exist in `AddTraces/DataCollection`, but barely differ from the
 global fit in the examined files.
 
+Formula identification uses two deliberately different ppm limits. A broad 200 ppm
+window generates formula and catalogue proposals for expert investigation. With at
+least three valid Mapping rows, their reconstructed baseline-mass residuals provide an
+independent check on model fit: the 95th-percentile absolute residual plus a 2 ppm
+small-sample margin defines the assignment radius, clamped to 5–10 ppm. Only candidates
+inside that run-specific radius may become automatic defaults. Wider candidates retain
+their signed ppm errors and remain explicit reviewer hypotheses. Fewer than three
+Mapping rows, or residuals above 10 ppm, disable automatic formula assignment without
+hiding the broad proposal list. Block-to-block internal-reference movement remains a
+temporal-stability diagnostic rather than an accuracy estimate.
+
 ## The four quantities
 
 ### 1. Raw [cps]

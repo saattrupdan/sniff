@@ -140,7 +140,8 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
     if last <= first:
         raise ValueError("peak preview range lies outside the measured spectrum")
     timebin = first + int(np.argmax(average[first:last]))
-    apex = float(ptrms.tb_to_m(timebin, mass_axis.a, mass_axis.b, mass_axis))
+    centre_timebin = ptrms._sub_bin_centre(average, timebin)
+    apex = float(ptrms.tb_to_m(centre_timebin, mass_axis.a, mass_axis.b, mass_axis))
 
     def _window_sum(centre):
         window_lo, window_hi = ptrms.peak_window(
@@ -157,18 +158,37 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
             _window_sum(apex + formula_id.DM1) / parent,
             _window_sum(apex + formula_id.DM2) / parent,
         )
-    local_candidates = formula_id.score_peak(
-        apex,
-        1.0,
-        obs_ratios=observed,
-        compounds_of_interest=compounds_of_interest,
+    tolerance = ptrms.formula_assignment_tolerance(mass_axis, apex)
+    local_candidates = (
+        formula_id.score_peak(
+            apex,
+            1.0,
+            obs_ratios=observed,
+            compounds_of_interest=compounds_of_interest,
+            tolerance_ppm=tolerance["ppm"],
+            mass_sigma_ppm=tolerance["score_sigma_ppm"],
+            proposal_tolerance_ppm=tolerance["proposal_ppm"],
+        )
+        if tolerance["candidate_generation_allowed"]
+        else []
     )
-    candidates = catalogue.CompoundCatalogue().score_peak(
-        apex,
-        candidates=local_candidates,
-        obs_ratios=observed,
-        compounds_of_interest=compounds_of_interest,
+    candidates = (
+        catalogue.CompoundCatalogue().score_peak(
+            apex,
+            candidates=local_candidates,
+            obs_ratios=observed,
+            compounds_of_interest=compounds_of_interest,
+            tolerance_ppm=tolerance["ppm"],
+            mass_sigma_ppm=tolerance["score_sigma_ppm"],
+            proposal_tolerance_ppm=tolerance["proposal_ppm"],
+        )
+        if tolerance["candidate_generation_allowed"]
+        else []
     )
+    if not tolerance["automatic_assignment_allowed"]:
+        for candidate in candidates:
+            candidate["assignment_eligible"] = False
+            candidate["mass_match"] = "calibration-unvalidated-proposal"
     for candidate in candidates:
         candidate["isotope_model"] = ptrms.isotopes.formula_isotope_model(
             candidate["formula"]
@@ -178,6 +198,14 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
         "apex": round(apex, 5),
         "height": parent,
         "candidates": candidates,
+        "formula_tolerance": {
+            **tolerance,
+            "ppm": round(tolerance["ppm"], 3),
+            "mDa": round(tolerance["mDa"], 3),
+            "proposal_ppm": round(tolerance["proposal_ppm"], 3),
+            "proposal_mDa": round(tolerance["proposal_mDa"], 3),
+            "score_sigma_ppm": round(tolerance["score_sigma_ppm"], 3),
+        },
     }
     from .analyze import interpret_peak_roles
 
@@ -185,6 +213,7 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
     return {
         "apex": preview["apex"],
         "candidates": candidates,
+        "formula_tolerance": preview["formula_tolerance"],
         "interpretation_candidates": preview.get("interpretation_candidates", []),
     }
 
@@ -230,6 +259,8 @@ def _apply_refined_identity_defaults(peaks, peaks_cfg):
             continue
         identity_options = []
         for rank, candidate in enumerate(peak.get("candidates") or [], start=1):
+            if not candidate.get("assignment_eligible", True):
+                continue
             formula = candidate.get("formula")
             if not formula or formula.upper() in reserved:
                 continue
@@ -503,19 +534,38 @@ def build_viz_data(
         winL, winR = _winlr(p) if win_manual else (apex / (2.0 * R), apex / (2.0 * R))
         # scored formula candidates + isotope evidence for the review UI
         observed_isotopes = obs_ratios(apex)
-        local_candidates = formula_id.score_peak(
-            apex,
-            drift,
-            obs_ratios=observed_isotopes,
-            compounds_of_interest=compounds_of_interest,
+        tolerance = ptrms.formula_assignment_tolerance(mass_axis, apex)
+        local_candidates = (
+            formula_id.score_peak(
+                apex,
+                drift,
+                obs_ratios=observed_isotopes,
+                compounds_of_interest=compounds_of_interest,
+                tolerance_ppm=tolerance["ppm"],
+                mass_sigma_ppm=tolerance["score_sigma_ppm"],
+                proposal_tolerance_ppm=tolerance["proposal_ppm"],
+            )
+            if tolerance["candidate_generation_allowed"]
+            else []
         )
-        cands = compound_catalogue.score_peak(
-            apex,
-            drift=drift,
-            candidates=local_candidates,
-            obs_ratios=observed_isotopes,
-            compounds_of_interest=compounds_of_interest,
+        cands = (
+            compound_catalogue.score_peak(
+                apex,
+                drift=drift,
+                candidates=local_candidates,
+                obs_ratios=observed_isotopes,
+                compounds_of_interest=compounds_of_interest,
+                tolerance_ppm=tolerance["ppm"],
+                mass_sigma_ppm=tolerance["score_sigma_ppm"],
+                proposal_tolerance_ppm=tolerance["proposal_ppm"],
+            )
+            if tolerance["candidate_generation_allowed"]
+            else []
         )
+        if not tolerance["automatic_assignment_allowed"]:
+            for candidate in cands:
+                candidate["assignment_eligible"] = False
+                candidate["mass_match"] = "calibration-unvalidated-proposal"
         for candidate in cands:
             try:
                 candidate["isotope_model"] = ptrms.isotopes.formula_isotope_model(
@@ -606,6 +656,14 @@ def build_viz_data(
                 "win_l": round(winL, 5),
                 "win_r": round(winR, 5),  # integration half-widths (m/z)
                 "win_manual": win_manual,
+                "formula_tolerance": {
+                    **tolerance,
+                    "ppm": round(tolerance["ppm"], 3),
+                    "mDa": round(tolerance["mDa"], 3),
+                    "proposal_ppm": round(tolerance["proposal_ppm"], 3),
+                    "proposal_mDa": round(tolerance["proposal_mDa"], 3),
+                    "score_sigma_ppm": round(tolerance["score_sigma_ppm"], 3),
+                },
                 "candidates": cands,
                 "id_confidence": id_conf,
                 "id_ambiguous": id_amb,
@@ -1478,7 +1536,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <p>The instrument stores two or more calibration anchors in <code>CALdata/Mapping</code> giving <b>timebin = a·√(m<sub>file</sub>) + b</b>. Two anchors determine the coefficients directly; three or more valid, well-conditioned anchors are fit by least squares and accepted only when their reconstructed masses have finite absolute relative errors of at most 100 ppm. Invalid or physically inconsistent Mapping data falls back to usable per-cycle <code>CALdata/Spectrum</code> coefficients. On top of that file mapping, Sniff requires the operational water calibrant (37.033) and protonated iodobenzene (204.951) in the sanitised average spectrum with sub-bin centring. Both anchors must be prominent, high-S/N, unambiguous, conservatively positioned and persistent across raw cycle blocks when available; otherwise the analysis stops with structured calibration diagnostics rather than using the HDF5 axis. The separate correction is <b>m<sub>corrected</sub> = scale·m<sub>file</sub> + offset</b>, translating and scaling the whole axis independently of the selected compound panel. Each isolated peak retains a tight local apex refinement; clustered components stay at corrected theoretical model centres so they do not jump onto a neighbour.</p>
 
   <h3>2 · Peak detection &amp; identification</h3>
-  <p>Peaks are local maxima of the average spectrum above a relative-height threshold. For each, candidate <b>molecular formulas</b> are enumerated offline (all plausible CHNOPS+halogen formulas within ~12 mDa) and ranked by three independent lines of evidence: exact-mass error, the measured-vs-predicted <b>¹³C (M+1) and heteroatom (M+2, e.g. S/Cl) isotope pattern</b>, and plausibility (integer ring+double-bond equivalents, the nitrogen rule, element ratios). Near-isobars are told apart by composition, not "nearest mass". Names and isomer labels come from the bundled PTR Library mapping when the formula is known; formula ranking cannot determine structural isomers.</p>
+  <p>Peaks are local maxima of the average spectrum above a relative-height threshold. For each, candidate <b>molecular formulas</b> are enumerated offline inside a broad 200 ppm proposal radius so an expert still receives useful leads. Three or more independent <code>CALdata/Mapping</code> reference residuals separately validate the run-specific assignment radius: at least 5 ppm and never more than 10 ppm. Only candidates inside that radius can be assigned automatically; wider matches remain visible as explicit reviewer hypotheses. Automatic assignment is withheld when the 95th-percentile calibration residual exceeds 10 ppm; broad proposals remain visible. With fewer than three references, broad proposals remain available but none are assigned automatically. Block-to-block movement of the two internal references is reported separately as temporal stability, not mistaken for mass accuracy. Candidates are ranked by three independent lines of evidence: ppm exact-mass error, the measured-vs-predicted <b>¹³C (M+1) and heteroatom (M+2, e.g. S/Cl) isotope pattern</b>, and plausibility (integer ring+double-bond equivalents, the nitrogen rule, element ratios). Near-isobars are told apart by composition, not "nearest mass". Names and isomer labels come from the bundled PTR Library mapping when the formula is known; formula ranking cannot determine structural isomers.</p>
 
   <h3>3 · Integration (Raw)</h3>
   <p><b>Isolated peaks:</b> Raw is a plain <b>window-sum</b> of the measured intensities across the peak's m/z window — no peak shape assumed, so asymmetric or flat-topped peaks are handled as-is. You set that window by dragging the dashed handles (left and right independently). The default R window setting is recomputed in the preview; the delivered CSV re-extracts it at full precision.</p>
@@ -2588,7 +2646,9 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
         '<span class="meta">'+(assigned?'current formula assignment':'label only; not formula-assigned')+'</span></div>'+
         '<div class="idnote" style="margin-top:8px">No locally generated protonated-neutral formula fits this m/z within the exact-mass tolerance. It may be a reagent/inorganic ion, isotope, fragment, unresolved interference, noise peak, or mass-calibration mismatch. The existing '+(assigned?'formula assignment':'label')+' is kept as-is.</div>';
     } else {
-      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+interpretationNote+'<div class="mut">No plausible protonated-neutral formula fits this m/z within 12 mDa. Use the interpretation above rather than inventing an analyte.</div>';
+      const tol=p.formula_tolerance||{};
+      const tolText=tol.proposal_ppm==null?'the current proposal radius':Number(tol.proposal_ppm).toFixed(0)+' ppm ('+Number(tol.proposal_mDa).toFixed(2)+' mDa here)';
+      el.innerHTML=provenance+confNote+clusterNote+isotopeNote+interpretationNote+'<div class="mut">No plausible protonated-neutral formula proposal fits this m/z within '+tolText+'. Use the interpretation above rather than inventing an analyte.</div>';
     }
     appendCatalogue(el,p,null,p.catalogue||[]);
     return; }
@@ -2604,11 +2664,16 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
     const matched=(c.interest_matches||[]).map(esc);
     const preferred=c.preferred_name||c.name;
     const alternatives=(c.names||[]).filter(name=>name!==preferred);
+    const massPill=c.mass_match==='calibration-unvalidated-proposal'
+      ? '<span class="pill hi">proposal — run calibration not validated</span>'
+      : c.assignment_eligible===false
+        ? '<span class="pill hi">broad proposal — outside run tolerance</span>'
+        : '<span class="pill">mass-consistent</span>';
     row.innerHTML=`<span class="f">${c.formula}</span>`+
       (preferred?`<span class="cname" title="best-guess compound name">${preferred}</span>`:``)+
       (alternatives.length?`<span class="meta">also: ${alternatives.map(esc).join(', ')}</span>`:``)+
-      (matched.length?`<span class="pill">of interest: ${matched.join(', ')}</span>`:``)+
-      `<span class="meta">Δ${c.delta_mDa>=0?'+':''}${c.delta_mDa} mDa · DBE ${c.dbe}${kb}</span>`+
+      (matched.length?`<span class="pill">of interest: ${matched.join(', ')}</span>`:``)+massPill+
+      `<span class="meta">Δ${c.delta_mDa>=0?'+':''}${c.delta_mDa} mDa (${c.delta_ppm>=0?'+':''}${c.delta_ppm} ppm) · DBE ${c.dbe}${kb}</span>`+
       (p.candidates.length===1?'':`<span class="bar"><span style="width:${Math.round(c.probability*100)}%"></span></span>`)+
       `<span class="p">${p.candidates.length===1?'only candidate':Math.round(c.probability*100)+'% share'}</span>`+
       `<span class="ev">${evText(c)}</span>`;
@@ -2620,6 +2685,11 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
       : "Overlaps m/z "+p.overlap.neighbor+" ("+p.overlap.sep_mDa+" mDa) — Raw comes from measured-shape deconvolution when the fit is identifiable.");
     el.appendChild(n); } }
 function assignCandidate(p,c){
+  const proposalReason=c.mass_match==='calibration-unvalidated-proposal'
+    ? "this run's calibration does not support automatic formula assignment"
+    : Math.abs(Number(c.delta_ppm)).toFixed(1)+" ppm error is outside this run's validated mass tolerance";
+  if(c.assignment_eligible===false && !confirm(
+      c.formula+" is a reviewer proposal because "+proposalReason+". Keep it only as an explicit hypothesis. Assign anyway?")) return;
   // guard against assigning the same compound to two peaks (a compound = one m/z)
   const preferred=c.preferred_name||c.name||c.formula;
   const cf=(c.formula||'').toUpperCase(), cn=(preferred||'').toLowerCase();
@@ -3054,9 +3124,16 @@ function updateMethods(){
   const massAxis=mc.applied
     ? `applied; scale = ${Number(mc.scale).toFixed(9)}, offset = ${Number(mc.offset_da).toFixed(6)} Da; both internal anchors passed`
     : `calibration unavailable; ${htmlText(mc.fallback_reason||"internal calibration did not pass")}`;
+  const ft=mc.formula_assignment_tolerance||{};
+  const massTolerance=ft.status==='accepted'
+    ? `${Number(ft.tolerance_ppm).toFixed(1)} ppm from ${Number(ft.q95_abs_ppm).toFixed(1)} ppm 95th-percentile Mapping fit residual`
+    : ft.status==='degraded'
+      ? `automatic assignment withheld — ${htmlText(ft.reason||'calibration residuals exceed 10 ppm')}`
+      : '10 ppm review-only fallback; fewer than three independent calibration references';
   live.innerHTML=staleHtml(stale)+`
     <h3>Effective settings</h3>
     <p><b>Mass axis:</b> ${massAxis}. The HDF5 a,b timebin mapping remains unchanged.</p>
+    <p><b>Formula assignment tolerance:</b> ${massTolerance}. Broad proposals are searched to ±200 ppm; the absolute mDa radii scale with each peak's m/z.</p>
     <p><b>R integration windows:</b> R = ${cfg.R} (${rSource}); manual peak windows override the default.
     <b>R<sub>phys</sub> physical/deconvolution resolution:</b> ${cfg.Rphys} (${rPhysSource}).</p>
     <p><b>K:</b> ${fmt(cfg.K)} (${effectiveKSource}); <b>molar volume:</b> ${fmt(cfg.Vm)} L/mol (${effectiveVmSource});

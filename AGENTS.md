@@ -53,6 +53,9 @@ agent-facing contracts; `README.md` and the CLI remain the user documentation.
 - **Identification limits:** m/z and formula candidates are proposals, not proof of
   chemical identity. Preserve honest unknowns, report ambiguity and overlap, and do
   not present a library match or candidate score as a calibrated probability.
+- **Tolerance layers:** preserve the distinction between broad 200 ppm formula/name
+  proposals for expert investigation and the run-validated 5–10 ppm assignment radius.
+  Wider proposals stay visible but must never become automatic identities.
 
 ## Repository workflow
 

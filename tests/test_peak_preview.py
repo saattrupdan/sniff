@@ -14,7 +14,7 @@ class PeakPreviewTest(unittest.TestCase):
         a = 10000.0
         axis = identity_mass_axis(a=a, b=0.0)
         expected = 59.0491
-        centre = int(round(a * np.sqrt(expected)))
+        centre = a * np.sqrt(expected)
         average = np.ones(80000, dtype=np.float64)
         bins = np.arange(len(average))
         average += 1000.0 * np.exp(-0.5 * ((bins - centre) / 7.0) ** 2)

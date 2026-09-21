@@ -270,7 +270,9 @@ class WebBookClient:
         candidates=None,
         obs_ratios=None,
         compounds_of_interest=None,
-        tol_mDa=12.0,
+        tolerance_ppm=10.0,
+        mass_sigma_ppm=None,
+        proposal_tolerance_ppm=200.0,
     ):
         """Return external proposals or validated formula candidates for one peak."""
         candidates = [dict(candidate) for candidate in candidates or []]
@@ -306,7 +308,9 @@ class WebBookClient:
                 drift=float(drift),
                 obs_ratios=obs_ratios,
                 compounds_of_interest=compounds_of_interest,
-                tol_mDa=float(tol_mDa),
+                tolerance_ppm=float(tolerance_ppm),
+                mass_sigma_ppm=mass_sigma_ppm,
+                proposal_tolerance_ppm=float(proposal_tolerance_ppm),
             )
 
     def review_lookup(
@@ -317,7 +321,9 @@ class WebBookClient:
         drift=1.0,
         obs_ratios=None,
         compounds_of_interest=None,
-        tol_mDa=12.0,
+        tolerance_ppm=10.0,
+        mass_sigma_ppm=None,
+        proposal_tolerance_ppm=200.0,
     ):
         """Return browser-ready WebBook enrichment for one selected peak."""
         if formula:
@@ -335,7 +341,9 @@ class WebBookClient:
             candidates=[],
             obs_ratios=obs_ratios,
             compounds_of_interest=compounds_of_interest,
-            tol_mDa=tol_mDa,
+            tolerance_ppm=tolerance_ppm,
+            mass_sigma_ppm=mass_sigma_ppm,
+            proposal_tolerance_ppm=proposal_tolerance_ppm,
         )
         for candidate in result["candidates"]:
             candidate["isotope_model"] = isotopes.formula_isotope_model(
@@ -375,10 +383,13 @@ class WebBookClient:
         drift,
         obs_ratios,
         compounds_of_interest,
-        tol_mDa,
+        tolerance_ppm,
+        mass_sigma_ppm,
+        proposal_tolerance_ppm,
     ):
-        neutral = mz / drift - formula_id.PROTON
-        tol_da = tol_mDa / 1000.0
+        observed_ion_mz = mz / drift
+        neutral = observed_ion_mz - formula_id.PROTON
+        tol_da = observed_ion_mz * proposal_tolerance_ppm / 1e6
         low = neutral - tol_da
         high = neutral + tol_da
         key = f"mass:{low:.6f},{high:.6f}"
@@ -427,7 +438,9 @@ class WebBookClient:
             mz,
             drift,
             obs_ratios=obs_ratios,
-            tol_mDa=tol_mDa,
+            tolerance_ppm=tolerance_ppm,
+            mass_sigma_ppm=mass_sigma_ppm,
+            proposal_tolerance_ppm=proposal_tolerance_ppm,
             compounds_of_interest=compounds_of_interest,
             extra_formulas=formulas,
             enumerate_candidates=False,

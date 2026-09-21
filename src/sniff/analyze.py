@@ -499,21 +499,66 @@ def annotate_peaks(
         e = dict(p)
         e["neutral_mass"] = round(mz - ptrms.PROTON, 4)
         observed_isotopes = obs_ratios(mz)
-        local_candidates = formula_id.score_peak(
-            mz,
-            drift,
-            obs_ratios=observed_isotopes,
-            elements=elements,
-            compounds_of_interest=compounds_of_interest,
+        tolerance = (
+            ptrms.formula_assignment_tolerance(mass_axis, mz)
+            if mass_axis is not None
+            else {
+                "model": "no-run-calibration-fallback",
+                "source": "no run calibration was supplied",
+                "status": "fallback",
+                "reason": "independent calibration residuals are unavailable",
+                "ppm": 10.0,
+                "mDa": 10.0 * mz / 1000.0,
+                "proposal_ppm": ptrms.FORMULA_PROPOSAL_TOLERANCE_PPM,
+                "proposal_mDa": (
+                    ptrms.FORMULA_PROPOSAL_TOLERANCE_PPM * mz / 1000.0
+                ),
+                "score_sigma_ppm": 4.0,
+                "candidate_generation_allowed": True,
+                "automatic_assignment_allowed": False,
+            }
         )
-        cands = compound_catalogue.score_peak(
-            mz,
-            drift=drift,
-            candidates=local_candidates,
-            obs_ratios=observed_isotopes,
-            compounds_of_interest=compounds_of_interest,
-            elements=elements,
+        e["formula_tolerance"] = {
+            **tolerance,
+            "ppm": round(tolerance["ppm"], 3),
+            "mDa": round(tolerance["mDa"], 3),
+            "proposal_ppm": round(tolerance["proposal_ppm"], 3),
+            "proposal_mDa": round(tolerance["proposal_mDa"], 3),
+            "score_sigma_ppm": round(tolerance["score_sigma_ppm"], 3),
+        }
+        local_candidates = (
+            formula_id.score_peak(
+                mz,
+                drift,
+                obs_ratios=observed_isotopes,
+                elements=elements,
+                compounds_of_interest=compounds_of_interest,
+                tolerance_ppm=tolerance["ppm"],
+                mass_sigma_ppm=tolerance["score_sigma_ppm"],
+                proposal_tolerance_ppm=tolerance["proposal_ppm"],
+            )
+            if tolerance["candidate_generation_allowed"]
+            else []
         )
+        cands = (
+            compound_catalogue.score_peak(
+                mz,
+                drift=drift,
+                candidates=local_candidates,
+                obs_ratios=observed_isotopes,
+                compounds_of_interest=compounds_of_interest,
+                elements=elements,
+                tolerance_ppm=tolerance["ppm"],
+                mass_sigma_ppm=tolerance["score_sigma_ppm"],
+                proposal_tolerance_ppm=tolerance["proposal_ppm"],
+            )
+            if tolerance["candidate_generation_allowed"]
+            else []
+        )
+        if not tolerance["automatic_assignment_allowed"]:
+            for candidate in cands:
+                candidate["assignment_eligible"] = False
+                candidate["mass_match"] = "calibration-unvalidated-proposal"
         e["candidates"] = cands
         # normalized top-candidate score / near-isobar ambiguity, surfaced explicitly;
         # conservative assignment gates below require multiple candidates
@@ -629,6 +674,11 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
             reagent_by_index[nearest_index] = marker_name
     for index, peak in enumerate(peaks):
         interpretations = []
+        validated_candidates = [
+            candidate
+            for candidate in peak.get("candidates") or []
+            if candidate.get("assignment_eligible", True)
+        ]
         flags = list(peak.get("likely_artifact") or [])
         reagent = next(
             (
@@ -641,7 +691,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
         if reagent is None:
             reagent = reagent_by_index.get(index)
         isobaric_water_cluster = bool(reagent and reagent.startswith("H3O+·("))
-        if isobaric_water_cluster and peak.get("candidates"):
+        if isobaric_water_cluster and validated_candidates:
             reagent = None
         if reagent:
             interpretations.append(
@@ -667,11 +717,15 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                 }
             )
 
-        if not interpretations and not peak.get("candidates"):
+        if not interpretations and not validated_candidates:
             isotope_options = []
             for order, spacing in ((1, formula_id.DM1), (2, formula_id.DM2)):
                 for parent_index, parent_mass in enumerate(masses):
-                    parent_candidates = peaks[parent_index].get("candidates") or []
+                    parent_candidates = [
+                        candidate
+                        for candidate in peaks[parent_index].get("candidates") or []
+                        if candidate.get("assignment_eligible", True)
+                    ]
                     if (
                         parent_index == index
                         or heights[parent_index] <= heights[index]
@@ -725,7 +779,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     }
                 )
 
-        if not interpretations and not peak.get("candidates"):
+        if not interpretations and not validated_candidates:
             authored_formula = peak.get("formula") or peak.get("suggested_formula")
             if authored_formula:
                 interpretations.append(
@@ -742,9 +796,31 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     }
                 )
             else:
-                evidence = [
-                    "no plausible protonated-neutral formula fits within 12 mDa"
-                ]
+                tolerance = peak.get("formula_tolerance") or {}
+                if tolerance.get("candidate_generation_allowed") is False:
+                    evidence = [
+                        "formula generation withheld because run calibration does not "
+                        "support a 10 ppm assignment radius",
+                        str(tolerance.get("reason") or "calibration residuals degraded"),
+                    ]
+                elif peak.get("candidates"):
+                    evidence = [
+                        f"{len(peak['candidates'])} broad formula proposal(s) are "
+                        f"available within {float(tolerance['proposal_ppm']):.0f} ppm, "
+                        f"but none fit the run-validated {float(tolerance['ppm']):.1f} "
+                        "ppm assignment radius"
+                    ]
+                elif tolerance.get("ppm") is not None:
+                    evidence = [
+                        "no plausible protonated-neutral formula proposal fits within "
+                        f"{float(tolerance['proposal_ppm']):.0f} ppm "
+                        f"({float(tolerance['proposal_mDa']):.2f} mDa here)"
+                    ]
+                else:
+                    evidence = [
+                        "no plausible protonated-neutral formula fits the current "
+                        "exact-mass tolerance"
+                    ]
                 if peak.get("overlap"):
                     evidence.append("the peak overlaps a neighbouring channel")
                 interpretations.append(
@@ -799,6 +875,14 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
         if interpretation:
             peak["suggested_label"] = interpretation["label"]
             continue
+        tolerance = peak.get("formula_tolerance") or {}
+        if tolerance.get("automatic_assignment_allowed") is False:
+            peak["suggested_label"] = existing_label or f"unknown m/z {peak['mz']:.3f}"
+            if existing_formula:
+                peak["suggested_formula"] = existing_formula
+            if existing_rank:
+                peak["suggested_candidate_rank"] = existing_rank
+            continue
         candidates = peak.get("candidates") or []
         if not candidates and existing_label:
             peak["suggested_label"] = existing_label
@@ -810,6 +894,8 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
         peak["suggested_label"] = f"unknown m/z {peak['mz']:.3f}"
         identity_options = []
         for rank, candidate in enumerate(candidates, start=1):
+            if not candidate.get("assignment_eligible", True):
+                continue
             formula = candidate.get("formula")
             compound_name = candidate.get("preferred_name") or candidate.get("name")
             label = compound_name or (formula if assign_all_library else None)
@@ -857,6 +943,7 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
         top = candidates[0] if candidates else None
         if (
             top
+            and top.get("assignment_eligible", True)
             and top.get("formula")
             and not top.get("name")
             and top["formula"].upper() not in owners
@@ -1013,6 +1100,7 @@ def _compact_peak(e):
         "rel_height": e.get("rel_height"),
         "prominence": e.get("prominence"),
         "neutral_mass": e.get("neutral_mass"),
+        "formula_tolerance": e.get("formula_tolerance"),
         "suggested_label": e.get("suggested_label"),
     }
     if e.get("suggested_formula"):
@@ -1024,6 +1112,9 @@ def _compact_peak(e):
             "formula": top.get("formula"),
             "name": top.get("name"),
             "delta_mDa": top.get("delta_mDa"),
+            "delta_ppm": top.get("delta_ppm"),
+            "mass_match": top.get("mass_match"),
+            "assignment_eligible": top.get("assignment_eligible"),
             "k": top.get("k"),
             "k_estimated": top.get("k_estimated"),
         }
@@ -1098,15 +1189,23 @@ def cmd_peaks(args):
     _assign_suggested_identities(peaks)
     n_amb = sum(1 for p in peaks if p.get("id_ambiguous"))
     n_ovl = sum(1 for p in peaks if p.get("overlap"))
+    n_with_formula_proposals = sum(bool(p.get("candidates")) for p in peaks)
+    n_mass_validated = sum(
+        any(candidate.get("assignment_eligible", True) for candidate in p.get("candidates", []))
+        for p in peaks
+    )
     # near-duplicate 'peak intervals': windows almost on top of each other
     dup_pairs = _window_overlap_pairs(peaks)
     full = getattr(args, "full", False)
     if full:
         note = (
-            "Each peak lists candidate FORMULAS ranked by `probability` "
-            "(combining exact-mass error, the measured vs predicted "
-            "13C(M+1)/heteroatom(M+2) isotope ratios, and plausibility) — "
-            "use this, not nearest-mass, to resolve isobars. `id_confidence` "
+            "Each peak lists broad candidate FORMULA proposals (up to 200 ppm) "
+            "ranked by `probability` (combining exact-mass error, the measured vs "
+            "predicted 13C(M+1)/heteroatom(M+2) isotope ratios, and plausibility). "
+            "`mass_match` and `assignment_eligible` distinguish proposals inside the "
+            "run-validated 5–10 ppm radius; only those may be assigned automatically. "
+            "Use the complete evidence, not nearest-mass, to resolve isobars. "
+            "`id_confidence` "
             "is the top candidate's normalized score/share; a sole candidate is "
             "not a 100% confidence estimate. `id_ambiguous` lists the "
             "close rivals when the call is not clear-cut; `overlap` flags a "
@@ -1126,8 +1225,9 @@ def cmd_peaks(args):
         note = (
             "Compact view (default). Each peak: `suggested_label` (a ready-to-use "
             "editable label; automatic library compounds are globally unique), "
-            "`top_candidate` (best formula/name/mass-error, chosen by isotope "
-            "pattern + plausibility, NOT nearest-mass), `id_confidence` (a normalized "
+            "`top_candidate` (best broad formula/name/mass-error proposal, chosen by "
+            "isotope pattern + plausibility, NOT nearest-mass; its `mass_match` shows "
+            "whether it is inside the run-validated radius), `id_confidence` (a normalized "
             "top-candidate score used by conservative gates, not a calibrated "
             "probability), and, when "
             "relevant, `id_ambiguous` (close rivals), `overlap` (quantification "
@@ -1165,6 +1265,10 @@ def cmd_peaks(args):
             "n_noise_dropped": (0 if include_art else n_noise),
             "mass_drift": round(drift, 6),
             "mass_axis_calibration": mass_axis.to_dict(),
+            "n_with_formula_proposals": n_with_formula_proposals,
+            "n_mass_validated": n_mass_validated,
+            "n_provisional_only": n_with_formula_proposals - n_mass_validated,
+            "n_without_formula_proposals": len(peaks) - n_with_formula_proposals,
             "n_ambiguous": n_amb,
             "n_overlapping": n_ovl,
             "n_window_overlap_pairs": len(dup_pairs),

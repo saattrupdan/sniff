@@ -181,11 +181,19 @@ class CompoundCatalogue:
         obs_ratios=None,
         compounds_of_interest=None,
         elements=None,
-        tol_mDa=12.0,
+        tol_mDa=None,
+        tolerance_ppm=10.0,
+        mass_sigma_ppm=None,
+        proposal_tolerance_ppm=200.0,
     ):
-        """Supplement and enrich a peak using only the strict local mass window."""
-        tolerance = float(tol_mDa) / 1000.0
-        neutral_mass = float(mz) / float(drift) - formula_id.PROTON
+        """Supplement a peak inside the broad local formula-proposal window."""
+        observed_ion_mz = float(mz) / float(drift)
+        tolerance = (
+            float(tol_mDa) / 1000.0
+            if tol_mDa is not None
+            else observed_ion_mz * float(proposal_tolerance_ppm) / 1e6
+        )
+        neutral_mass = observed_ion_mz - formula_id.PROTON
         extra = [
             item["formula"]
             for item in self.formulas_in_mass_range(neutral_mass, tolerance)
@@ -202,5 +210,8 @@ class CompoundCatalogue:
             elements=elements,
             extra_formulas=extra,
             tol_mDa=tol_mDa,
+            tolerance_ppm=tolerance_ppm,
+            mass_sigma_ppm=mass_sigma_ppm,
+            proposal_tolerance_ppm=proposal_tolerance_ppm,
         )
         return self.enrich_candidates(scored)

@@ -205,6 +205,60 @@ class VizDataTest(unittest.TestCase):
         self.assertEqual(review_peaks[2]["label"], "m44.063")
         self.assertIn("labelAuto", review_peaks[2])
 
+    def test_provisional_candidate_cannot_win_refined_identity_assignment(self):
+        config_peaks = [
+            {"mz": 59.049, "label": ""},
+            {"mz": 59.050, "label": ""},
+        ]
+        review_peaks = [
+            {
+                "_config_original": dict(config_peaks[0]),
+                "mz": 59.049,
+                "abundance": 100.0,
+                "label": "m59.049",
+                "labelAuto": "m59.049",
+                "formula": "",
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "probability": 0.9,
+                        "assignment_eligible": True,
+                    },
+                    {
+                        "formula": "C2H2O2",
+                        "probability": 0.8,
+                        "assignment_eligible": True,
+                    },
+                ],
+            },
+            {
+                "_config_original": dict(config_peaks[1]),
+                "mz": 59.050,
+                "abundance": 80.0,
+                "label": "m59.050",
+                "labelAuto": "m59.050",
+                "formula": "",
+                "candidates": [
+                    {
+                        "formula": "C3H6O",
+                        "name": "acetone",
+                        "probability": 0.99,
+                        "assignment_eligible": False,
+                        "mass_match": "broad-proposal",
+                    }
+                ],
+            },
+        ]
+
+        viz._apply_refined_identity_defaults(review_peaks, config_peaks)
+
+        self.assertEqual(review_peaks[0]["formula"], "C3H6O")
+        self.assertEqual(review_peaks[0]["label"], "acetone")
+        self.assertEqual(review_peaks[1]["formula"], "")
+        self.assertEqual(review_peaks[1]["label"], "m59.050")
+        self.assertIn("labelAuto", review_peaks[1])
+
     def test_a_name_the_tool_invented_is_never_saved_as_an_assignment(self):
         # An unnamed peak still needs something to draw on the spectrum, so a
         # mass-derived stand-in stands in for display. It must not reach the config:
