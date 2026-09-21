@@ -17,6 +17,9 @@ molecular formula (PTR cannot separate structural isomers by mass), keeping:
               humidity/temperature dependent) and 'frag' (the protonated parent is
               not the main product ion -> fragments).
   isomers   = the distinct compound names the library lists at that formula.
+  fragmentation_profiles = individual source-row product-ion patterns, retaining
+              compound, E/N, instrument and citation provenance rather than merging
+              potentially different isomers or reaction conditions.
 Run:  uv run python -m sniff.gen_rate_constants
 """
 
@@ -78,15 +81,30 @@ def main():
     C_KM = col["Rate coefficient, measured, 0 Td, 298 K (cm3/s)"]
     C_KC = col["kcap, 120 Td, 323 K"]
     C_CLASS = col["Class"]
-    # product-ion m/z columns (A..G) to detect fragmentation
-    prod_cols = [
-        col[k]
-        for k in ("m/z A", "m/z B", "m/z C", "m/z D", "m/z E", "m/z F", "m/z G")
-        if k in col
+    product_columns = [
+        (col[mass_name], col.get(yield_name))
+        for mass_name, yield_name in (
+            ("m/z A", "%A"),
+            ("m/z B", "% B"),
+            ("m/z C", "% C"),
+            ("m/z D", "% D"),
+            ("m/z E", "% E"),
+            ("m/z F", "% F"),
+            ("m/z G", "% G"),
+        )
+        if mass_name in col
     ]
+    C_INSTRUMENT = col.get("Instrument")
+    C_PRESSURE = col.get("p drift (mbar)")
+    C_EN = col.get("E/N (Td)")
+    C_REFERENCE = col.get("Reference")
+    C_DOI = col.get("DOI")
+
+    def value(row, index):
+        return row[index].strip() if index is not None and index < len(row) else ""
 
     groups = {}
-    for r in rows[3:]:
+    for row_number, r in enumerate(rows[3:], start=4):
         if len(r) <= C_CLASS:
             continue
         comp = r[C_COMP].strip()
@@ -110,14 +128,35 @@ def main():
         km = num(r[C_KM])
         kc = num(r[C_KC])
         pa = num(r[C_PA])
-        # fragmentation: any product ion far from the protonated parent
-        frag = False
+        product_pathways = []
         if parent is not None:
-            for pc in prod_cols:
-                pv = num(r[pc]) if pc < len(r) else None
-                if pv is not None and abs(pv - parent) > 0.3:
-                    frag = True
-                    break
+            for mass_column, yield_column in product_columns:
+                product_mz = num(value(r, mass_column))
+                if product_mz is None or abs(product_mz - parent) <= 0.3:
+                    continue
+                product = {
+                    "mz": product_mz,
+                    "pathway_type": "fragment" if product_mz < parent else "adduct",
+                }
+                product_yield = num(value(r, yield_column))
+                if product_yield is not None:
+                    product["yield_percent"] = product_yield
+                product_pathways.append(product)
+        fragmentation_profile = None
+        if product_pathways:
+            fragmentation_profile = {
+                "profile_id": f"ptrlibrary-row-{row_number}",
+                "name": name or formula,
+                "cas": value(r, C_CAS) or None,
+                "reagent": "H3O+",
+                "parent_mz": parent,
+                "products": product_pathways,
+                "instrument": value(r, C_INSTRUMENT) or None,
+                "e_n_td": num(value(r, C_EN)),
+                "pressure_mbar": num(value(r, C_PRESSURE)),
+                "reference": value(r, C_REFERENCE) or None,
+                "doi": value(r, C_DOI) or None,
+            }
         g = groups.setdefault(
             formula,
             {
@@ -131,6 +170,7 @@ def main():
                 "class": None,
                 "frag_votes": 0,
                 "n": 0,
+                "fragmentation_profiles": [],
             },
         )
         g["n"] += 1
@@ -146,8 +186,13 @@ def main():
             g["cas"] = r[C_CAS].strip()
         if not g["class"] and r[C_CLASS].strip():
             g["class"] = r[C_CLASS].strip()
-        if frag:
-            g["frag_votes"] += 1
+        if fragmentation_profile is not None:
+            if any(
+                product["pathway_type"] == "fragment"
+                for product in fragmentation_profile["products"]
+            ):
+                g["frag_votes"] += 1
+            g["fragmentation_profiles"].append(fragmentation_profile)
 
     compounds = []
     for g in groups.values():
@@ -183,6 +228,7 @@ def main():
                 "cas": g["cas"],
                 "class": g["class"],
                 "isomers": g["names"],
+                "fragmentation_profiles": g["fragmentation_profiles"],
             }
         )
     # small supplement for VOCs absent from the library but important in breath /
@@ -226,7 +272,9 @@ def main():
         "Spectrom. 2019, doi.org/10.1007/s13361-019-02209-3; "
         "tinyurl.com/PTRLibrary). One entry per neutral formula; k in "
         "1e-9 cm3/s (measured median, else Su-Chesnavich kcap flagged "
-        "k_estimated). Regenerate with `uv run python -m sniff.gen_rate_constants`.",
+        "k_estimated). Fragmentation profiles preserve individual H3O+ library rows "
+        "with product-ion, E/N, instrument and citation provenance. Regenerate with "
+        "`uv run python -m sniff.gen_rate_constants`.",
         "compounds": compounds,
     }
     with OUT.open("w", encoding="utf-8") as fh:

@@ -48,7 +48,7 @@ from contextlib import ExitStack
 import h5py
 import numpy as np
 
-from . import catalogue, formula_id, ptrms
+from . import catalogue, formula_id, fragmentation, ptrms
 
 _ANALYSIS_DEFAULTS = {
     "R": 1200.0,
@@ -370,6 +370,7 @@ def cmd_inspect(args):
                     "b": b,
                 },
                 "mass_axis_calibration": mass_axis.to_dict(),
+                "fragmentation_context": fragmentation.reaction_context(f),
                 "transmission_available": ptrms.has_transmission(f),
                 "transmission_masses": [round(x, 3) for x in tm.tolist()],
                 "transmission_factors": [round(x, 4) for x in tf.tolist()],
@@ -421,6 +422,7 @@ def annotate_peaks(
     mass_axis=None,
     compounds_of_interest=None,
     assign_all_library=False,
+    candidate_pool_size=5,
 ):
     """Enrich detected peaks with candidate FORMULA assignments (scored by mass +
     isotope pattern + plausibility) and artifact flags, so the agent/expert can
@@ -536,6 +538,7 @@ def annotate_peaks(
                 tolerance_ppm=tolerance["ppm"],
                 mass_sigma_ppm=tolerance["score_sigma_ppm"],
                 proposal_tolerance_ppm=tolerance["proposal_ppm"],
+                max_candidates=candidate_pool_size,
             )
             if tolerance["candidate_generation_allowed"]
             else []
@@ -551,6 +554,7 @@ def annotate_peaks(
                 tolerance_ppm=tolerance["ppm"],
                 mass_sigma_ppm=tolerance["score_sigma_ppm"],
                 proposal_tolerance_ppm=tolerance["proposal_ppm"],
+                max_candidates=candidate_pool_size,
             )
             if tolerance["candidate_generation_allowed"]
             else []
@@ -643,6 +647,42 @@ def annotate_peaks(
     return drift, out
 
 
+def apply_run_fragmentation_evidence(
+    f,
+    peaks,
+    *,
+    mass_axis=None,
+    R=1200.0,
+    R_phys=2400.0,
+    drift=1.0,
+    progress=None,
+    should_stop=None,
+):
+    """Rerank existing formula candidates from measured PTR fragment co-variation."""
+    context = fragmentation.reaction_context(f)
+    masses = [float(peak["mz"]) for peak in peaks]
+    if not masses or "SPECdata/Intensities" not in f:
+        return context
+    traces, _ = ptrms.extract_traces(
+        f,
+        masses,
+        R=R,
+        R_phys=R_phys,
+        mass_axis=mass_axis,
+        progress=progress,
+        should_stop=should_stop,
+    )
+    fragmentation.apply_fragmentation_evidence(
+        peaks,
+        {mass: traces[mass][0] for mass in masses},
+        ptrms.load_rate_constants(),
+        context,
+        r_phys=R_phys,
+    )
+    interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
+    return context
+
+
 def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
     """Attach evidence-backed non-analyte or unresolved interpretations.
 
@@ -713,6 +753,35 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     "label": "detector artefact / noise",
                     "source": "peak-shape and reagent-region diagnostics",
                     "evidence": noise_flags,
+                    "exclude_from_analyte_assignment": True,
+                }
+            )
+
+        if (
+            not interpretations
+            and not validated_candidates
+            and peak.get("fragmentation_links")
+        ):
+            link = peak["fragmentation_links"][0]
+            identity = link.get("candidate_name") or link.get("parent_formula")
+            interpretations.append(
+                {
+                    "kind": "fragment",
+                    "label": (
+                        f"possible fragment of {identity} at parent m/z "
+                        f"{float(link['parent_mz']):.4f}"
+                    ),
+                    "source": "PTR Library pathway and measured temporal co-variation",
+                    "related_mz": link["parent_mz"],
+                    "evidence": [
+                        f"library fragment m/z {float(link['expected_fragment_mz']):.4f}",
+                        (
+                            "level/change correlations "
+                            f"{float(link['level_correlation']):.2f}/"
+                            f"{float(link['change_correlation']):.2f}"
+                        ),
+                        "supporting evidence only; not MS/MS proof",
+                    ],
                     "exclude_from_analyte_assignment": True,
                 }
             )
@@ -1117,6 +1186,7 @@ def _compact_peak(e):
             "assignment_eligible": top.get("assignment_eligible"),
             "k": top.get("k"),
             "k_estimated": top.get("k_estimated"),
+            "fragmentation_evidence": top.get("fragmentation_evidence"),
         }
     if "id_confidence" in e:
         out["id_confidence"] = e["id_confidence"]
@@ -1133,6 +1203,8 @@ def _compact_peak(e):
         out["likely_artifact"] = e["likely_artifact"]
     if "interpretation_candidates" in e:
         out["interpretation_candidates"] = e["interpretation_candidates"]
+    if "fragmentation_links" in e:
+        out["fragmentation_links"] = e["fragmentation_links"]
     return out
 
 
@@ -1170,14 +1242,22 @@ def cmd_peaks(args):
             R_phys=R_phys,
             mass_axis=mass_axis,
         )
-    drift, peaks = annotate_peaks(
-        peaks,
-        avgspec=avg,
-        a=a,
-        b=b,
-        R_phys=(getattr(args, "R_phys", None) or 2400.0),
-        mass_axis=mass_axis,
-    )
+        drift, peaks = annotate_peaks(
+            peaks,
+            avgspec=avg,
+            a=a,
+            b=b,
+            R_phys=R_phys,
+            mass_axis=mass_axis,
+            candidate_pool_size=20,
+        )
+        fragmentation_context = apply_run_fragmentation_evidence(
+            f,
+            peaks,
+            mass_axis=mass_axis,
+            R_phys=R_phys,
+            drift=drift,
+        )
     # By default the menu excludes instrument-noise artifacts (ringing combs,
     # low-prominence ripples, reagent saturation-region skirt) so that copying the
     # list straight into a config can't ship a noise comb; reagent/cluster diagnostic
@@ -1201,7 +1281,8 @@ def cmd_peaks(args):
         note = (
             "Each peak lists broad candidate FORMULA proposals (up to 200 ppm) "
             "ranked by `probability` (combining exact-mass error, the measured vs "
-            "predicted 13C(M+1)/heteroatom(M+2) isotope ratios, and plausibility). "
+            "predicted 13C(M+1)/heteroatom(M+2) isotope ratios, plausibility, and "
+            "secondary known-pathway fragment co-variation where available). "
             "`mass_match` and `assignment_eligible` distinguish proposals inside the "
             "run-validated 5–10 ppm radius; only those may be assigned automatically. "
             "Use the complete evidence, not nearest-mass, to resolve isobars. "
@@ -1213,7 +1294,10 @@ def cmd_peaks(args):
             "uncertainty (unresolved = worse than deconvolved). `name`/`k` are "
             "filled when the formula is in the rate table (else k_estimated). "
             "`iso_pred` vs `iso_obs` = predicted vs observed (M+1,M+2)/M. "
-            "`suggested_label` is an editable, globally unique high-ranked default. "
+            "`fragmentation_evidence` reports condition-matched PTR Library pathways "
+            "and temporal co-variation; it can reorder existing candidates but never "
+            "create one or override `assignment_eligible`. `suggested_label` is an "
+            "editable, globally unique high-ranked default. "
             "`interpretation_candidates` explains reagent, isotope, artefact, authored "
             "or unresolved channels when a neutral compound assignment would mislead. "
             "`prominence` is the apex's rise above local baseline in cps (real "
@@ -1226,7 +1310,8 @@ def cmd_peaks(args):
             "Compact view (default). Each peak: `suggested_label` (a ready-to-use "
             "editable label; automatic library compounds are globally unique), "
             "`top_candidate` (best broad formula/name/mass-error proposal, chosen by "
-            "isotope pattern + plausibility, NOT nearest-mass; its `mass_match` shows "
+            "isotope pattern, plausibility, and applicable fragmentation evidence, NOT "
+            "nearest-mass; its `mass_match` shows "
             "whether it is inside the run-validated radius), `id_confidence` (a normalized "
             "top-candidate score used by conservative gates, not a calibrated "
             "probability), and, when "
@@ -1265,6 +1350,7 @@ def cmd_peaks(args):
             "n_noise_dropped": (0 if include_art else n_noise),
             "mass_drift": round(drift, 6),
             "mass_axis_calibration": mass_axis.to_dict(),
+            "fragmentation_context": fragmentation_context,
             "n_with_formula_proposals": n_with_formula_proposals,
             "n_mass_validated": n_mass_validated,
             "n_provisional_only": n_with_formula_proposals - n_mass_validated,
@@ -1406,7 +1492,7 @@ def auto_peaks(
         R_phys=R_phys,
         mass_axis=mass_axis,
     )
-    _, peaks = annotate_peaks(
+    drift, peaks = annotate_peaks(
         peaks,
         avgspec=avg,
         a=a,

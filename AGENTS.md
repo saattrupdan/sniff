@@ -56,6 +56,10 @@ agent-facing contracts; `README.md` and the CLI remain the user documentation.
 - **Tolerance layers:** preserve the distinction between broad 200 ppm formula/name
   proposals for expert investigation and the run-validated 5–10 ppm assignment radius.
   Wider proposals stay visible but must never become automatic identities.
+- **Fragmentation evidence:** use condition-matched PTR Library pathways and measured
+  parent/fragment co-variation only to rerank existing candidates or suggest fragment
+  roles. It must not create formulas, override mass eligibility, prove an isomer, or be
+  described as MS/MS evidence.
 
 ## Repository workflow
 

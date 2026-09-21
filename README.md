@@ -405,6 +405,17 @@ review proposals but Sniff does not assign them automatically. Internal-referenc
 movement across cycle blocks is reported separately as temporal stability; it is not
 treated as mass-accuracy evidence.
 
+When the file records H₃O⁺ reagent mode and E/N, Sniff also tests individual PTR Library
+fragmentation profiles measured within 20 Td of the run median. A profile contributes
+secondary ranking support only when a detected product-ion channel has both correlated
+log-signal levels and correlated cycle-to-cycle changes with the candidate parent. The
+library compound, product m/z, branching percentage, conditions and citation remain in
+the candidate evidence. This can reorder formulas that already passed candidate
+generation and can mark another channel as a possible fragment; it cannot create a
+formula, make a 200 ppm proposal assignment-eligible, prove a structural isomer, or act
+as MS/MS evidence. Co-variation can reflect shared sample timing, and Sniff does not
+recombine fragment channels for quantification.
+
 By default `analyze` integrates each interval with each isolated peak's apex/window
 **re-centred on that interval's own spectrum** — peaks drift between intervals (a
 compound may be absent in a background), so one whole-run window sits off-peak

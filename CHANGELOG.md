@@ -38,6 +38,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   channels and detector artefacts are excluded from automatic analyte assignment;
   unmatched channels are labelled as unresolved ions rather than being given fabricated
   compounds.
+- PTR Library source rows now retain product-ion masses, branching percentages, E/N,
+  instrument and citation provenance. Under compatible measured reaction conditions,
+  parent/fragment level and change co-variation can rerank existing formula proposals
+  and link possible fragment channels without creating candidates or overriding the
+  exact-mass assignment gate.
 
 ### Changed
 

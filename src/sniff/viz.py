@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from . import brand, catalogue, formula_id, ptrms
+from . import brand, catalogue, formula_id, fragmentation, ptrms
 
 logger = logging.getLogger(__name__)
 
@@ -544,6 +544,7 @@ def build_viz_data(
                 tolerance_ppm=tolerance["ppm"],
                 mass_sigma_ppm=tolerance["score_sigma_ppm"],
                 proposal_tolerance_ppm=tolerance["proposal_ppm"],
+                max_candidates=20,
             )
             if tolerance["candidate_generation_allowed"]
             else []
@@ -558,6 +559,7 @@ def build_viz_data(
                 tolerance_ppm=tolerance["ppm"],
                 mass_sigma_ppm=tolerance["score_sigma_ppm"],
                 proposal_tolerance_ppm=tolerance["proposal_ppm"],
+                max_candidates=20,
             )
             if tolerance["candidate_generation_allowed"]
             else []
@@ -682,6 +684,17 @@ def build_viz_data(
                 ),
             }
         )
+    fragmentation_context = fragmentation.reaction_context(f)
+    fragmentation.apply_fragmentation_evidence(
+        peaks,
+        {
+            float(peak["mz"]): raw_traces[float(peaks_cfg[index]["mz"])]
+            for index, peak in enumerate(peaks)
+        },
+        ptrms.load_rate_constants(),
+        fragmentation_context,
+        r_phys=R_phys,
+    )
     from .analyze import interpret_peak_roles
 
     interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
@@ -719,6 +732,7 @@ def build_viz_data(
             "mass_scale": mass_axis.scale,
             "mass_offset": mass_axis.offset,
             "mass_axis_calibration": mass_axis.to_dict(),
+            "fragmentation_context": fragmentation_context,
             "identity_mass_drift": drift,
             "fresh_review": bool(assign_identity_defaults),
             "R": R,
@@ -1561,7 +1575,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <ul>
     <li><b>One empirical profile family</b> across the spectrum — version-2 deconvolution learns asymmetry from clean run peaks and permits bounded centre/width changes, but physically coalesced components remain unidentifiable and are withheld.</li>
     <li><b>Single sensitivity K</b> unless per-compound kinetic mode is on; the shared-K assumption is only exact for compounds with similar reaction rate constants.</li>
-    <li><b>No fragmentation correction</b> — each peak is treated as a parent ion. Compounds that fragment (flagged where known) spread signal across masses that this tool does not recombine.</li>
+    <li><b>Fragmentation evidence, not correction</b> — condition-matched PTR Library product ions and measured temporal co-variation can support and rerank an existing exact-mass formula proposal. They cannot create a candidate, override the run mass gate, or prove an isomer. Every channel is still quantified independently, so fragmenting compounds may read low.</li>
     <li><b>Humidity dependence</b> is an optional, empirical normalisation, not a full ion-chemistry model; leave it off unless you have reason to apply it.</li>
     <li><b>Mass-axis correction needs both internal references</b> — if either water-cluster or iodobenzene is absent, weak, ambiguous or not persistent across raw cycles, Sniff stops with structured diagnostics rather than retaining an unsafe file calibration.</li>
     <li><b>Identification is a ranking, not proof</b>: candidate percentages are relative score/share, not calibrated identification confidence; unresolved overlaps are flagged and the expert makes the final call.</li>
@@ -2669,6 +2683,13 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
       : c.assignment_eligible===false
         ? '<span class="pill hi">broad proposal — outside run tolerance</span>'
         : '<span class="pill">mass-consistent</span>';
+    const fragmentEvidence=c.fragmentation_evidence||{};
+    const fragmentMatches=(fragmentEvidence.matches||[]).filter(match=>match.supported);
+    const fragmentText=fragmentEvidence.status==='support'
+      ? `<span class="pill">fragment pathway support: ${fragmentMatches.length}</span>`+
+        `<span class="meta">${fragmentMatches.map(match=>esc(match.compound||c.formula)+' → m/z '+Number(match.observed_mz).toFixed(4)+'; correlations '+Number(match.level_correlation).toFixed(2)+'/'+Number(match.change_correlation).toFixed(2)).join(' · ')}</span>`
+      : fragmentEvidence.status==='inconclusive'
+        ? `<span class="meta">fragmentation evidence inconclusive</span>` : '';
     row.innerHTML=`<span class="f">${c.formula}</span>`+
       (preferred?`<span class="cname" title="best-guess compound name">${preferred}</span>`:``)+
       (alternatives.length?`<span class="meta">also: ${alternatives.map(esc).join(', ')}</span>`:``)+
@@ -2676,7 +2697,7 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
       `<span class="meta">Δ${c.delta_mDa>=0?'+':''}${c.delta_mDa} mDa (${c.delta_ppm>=0?'+':''}${c.delta_ppm} ppm) · DBE ${c.dbe}${kb}</span>`+
       (p.candidates.length===1?'':`<span class="bar"><span style="width:${Math.round(c.probability*100)}%"></span></span>`)+
       `<span class="p">${p.candidates.length===1?'only candidate':Math.round(c.probability*100)+'% share'}</span>`+
-      `<span class="ev">${evText(c)}</span>`;
+      fragmentText+`<span class="ev">${evText(c)}</span>`;
     row.onclick=()=>assignCandidate(p,c); el.appendChild(row);
     appendCatalogue(el,p,c,c.catalogue||[]); });
   if(p.overlap){ const n=document.createElement("div"); n.className="idnote warn"; n.style.marginTop="8px";
@@ -3130,10 +3151,15 @@ function updateMethods(){
     : ft.status==='degraded'
       ? `automatic assignment withheld — ${htmlText(ft.reason||'calibration residuals exceed 10 ppm')}`
       : '10 ppm review-only fallback; fewer than three independent calibration references';
+  const fc=M.fragmentation_context||{};
+  const fragmentationContext=fc.status==='available'
+    ? `${htmlText(fc.reagent)} at median E/N ${Number(fc.e_n_td).toFixed(1)} Td; PTR Library profiles within ±20 Td were tested against measured level and change co-variation`
+    : `unavailable — ${htmlText(fc.reason||'reaction context was not recorded')}`;
   live.innerHTML=staleHtml(stale)+`
     <h3>Effective settings</h3>
     <p><b>Mass axis:</b> ${massAxis}. The HDF5 a,b timebin mapping remains unchanged.</p>
     <p><b>Formula assignment tolerance:</b> ${massTolerance}. Broad proposals are searched to ±200 ppm; the absolute mDa radii scale with each peak's m/z.</p>
+    <p><b>Fragmentation evidence:</b> ${fragmentationContext}. This secondary evidence can rerank existing proposals but cannot create or mass-validate one, and co-variation is not MS/MS proof.</p>
     <p><b>R integration windows:</b> R = ${cfg.R} (${rSource}); manual peak windows override the default.
     <b>R<sub>phys</sub> physical/deconvolution resolution:</b> ${cfg.Rphys} (${rPhysSource}).</p>
     <p><b>K:</b> ${fmt(cfg.K)} (${effectiveKSource}); <b>molar volume:</b> ${fmt(cfg.Vm)} L/mol (${effectiveVmSource});

@@ -185,6 +185,7 @@ class CompoundCatalogue:
         tolerance_ppm=10.0,
         mass_sigma_ppm=None,
         proposal_tolerance_ppm=200.0,
+        max_candidates=5,
     ):
         """Supplement a peak inside the broad local formula-proposal window."""
         observed_ion_mz = float(mz) / float(drift)
@@ -213,5 +214,6 @@ class CompoundCatalogue:
             tolerance_ppm=tolerance_ppm,
             mass_sigma_ppm=mass_sigma_ppm,
             proposal_tolerance_ppm=proposal_tolerance_ppm,
+            max_candidates=max_candidates,
         )
         return self.enrich_candidates(scored)

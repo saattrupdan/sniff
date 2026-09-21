@@ -87,6 +87,32 @@ def test_valid_formula_candidate_is_not_reclassified_as_an_isotope():
     assert "interpretation_candidates" not in independent
 
 
+def test_supported_fragment_link_is_an_interpretation_not_an_identity():
+    fragment = {
+        "mz": 43.018,
+        "height": 20.0,
+        "candidates": [],
+        "fragmentation_links": [
+            {
+                "parent_mz": 73.065,
+                "parent_formula": "C4H8O",
+                "candidate_name": "test ketone",
+                "expected_fragment_mz": 43.018,
+                "level_correlation": 0.95,
+                "change_correlation": 0.88,
+            }
+        ],
+    }
+
+    interpret_peak_roles([fragment])
+
+    interpretation = fragment["interpretation_candidates"][0]
+    assert interpretation["kind"] == "fragment"
+    assert interpretation["exclude_from_analyte_assignment"] is True
+    assert "possible fragment" in interpretation["label"]
+    assert any("not MS/MS proof" in item for item in interpretation["evidence"])
+
+
 def test_peak_without_formula_candidate_gets_explicit_unresolved_interpretation():
     peak = {
         "mz": 41.0541,
