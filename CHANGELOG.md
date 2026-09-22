@@ -7,8 +7,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-22
+
 ### Added
 
+- New schema-4 reviews use `joint-temporal-v2` overlap fitting. One empirical centre
+  and width model is shared across the run; non-negative traces receive deterministic
+  temporal regularisation selected by held-out spectral-bin prediction. A decomposition
+  must improve on every one-component-reduced model and retain enough active cycles, or
+  every affected quantitative trace is withheld.
+- Detector ringing now uses a run-wide response model in addition to repeated calibrated
+  delays and trace correlation. Independent parent families establish delay dispersion,
+  response-gain stability and an amplitude prediction interval; each candidate must pass
+  blocked held-out temporal prediction without contributing its own parent family to the
+  model.
 - `sniff diagnose FILE --config REVIEW.json` now emits a read-only, component-level
   explanation of unresolved and optionally all canonical components: member peaks,
   nearest out-of-gate formula diagnostics, route checks, overlap and interval-fit
@@ -104,9 +116,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   tolerances. The former vague m/z 30.994 O₂⁺/NO⁺ region label is now the specific NO⁺
   (¹⁵N) isotope, preventing nearby formaldehyde and reagent-region satellites from
   receiving misleading reagent labels.
-- New app-generated configs use analysis schema 3 with `empirical-v1` fitting and joint
-  `formula-envelope-v2` isotope handling. Schema-2 configs retain `formula-v1`, and
-  legacy configs retain their previous Gaussian and isotope-off arithmetic.
+- New app-generated configs use analysis schema 4 with `joint-temporal-v2` fitting and
+  `formula-envelope-v2` isotope handling. Schema-3 reviews retain `empirical-v1`,
+  schema-2 configs retain `formula-v1`, and legacy configs retain their previous
+  Gaussian and isotope-off arithmetic.
 
 ### Fixed
 

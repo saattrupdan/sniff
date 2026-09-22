@@ -178,25 +178,32 @@ Sniff therefore converts candidate parent/satellite apexes through the accepted 
 calibration and learns delay modes only when the same delay recurs behind several tall,
 high-prominence parents. A candidate echo must have no formula or alternative-ion
 proposal, have a parent at least twice as tall, and match one of those run-specific delay
-modes. It is removed from the default panel only when parent and satellite extracted
-traces also pass level and cycle-change correlation thresholds. Mass coincidence,
-formula absence, low m/z and correlation alone remain supporting evidence rather than an
-artefact decision; `--include-artifacts` retains every channel and its diagnostics.
+modes. Independent parent families then establish the run-wide delay dispersion,
+response gain and amplitude prediction interval. A candidate and its parent family are
+excluded from their own reference model, and blocked cycle folds must predict its
+variation with no more than 0.35 normalised error. It is removed from the default panel
+only when delay, gain, held-out prediction, level correlation and cycle-change
+correlation all pass. Mass coincidence, formula absence, low m/z and correlation alone
+remain supporting evidence rather than an artefact decision; `--include-artifacts`
+retains every channel and its diagnostics.
 
 ## Overlapping peaks (isobaric interference)
 
 The central difficulty of PTR-TOF. A window wide enough for accurate area on isolated
-peaks reaches into neighbours < ~0.05 m/z away. Version-2 analyses group peaks within
+peaks reaches into neighbours < ~0.05 m/z away. Schema-4 analyses group peaks within
 `cluster_gap` (0.2 m/z), learn an empirical line shape from clean isolated peaks in the
-same run, and fit bounded shared centre and width changes on the run and interval
-average spectra. A dependency-free non-negative least-squares solve then obtains
-amplitudes per cycle and rescales them to the window-sum Raw definition. Numerical
-rank, condition, component correlation and residual diagnostics decide whether the
-components are
-independently identifiable. Unreliable values become unavailable rather than being
-clipped into plausible concentrations. The previous fixed-centre Gaussian model remains
-available as `gaussian-v1` and is the reported fallback when an empirical profile cannot
-be established.
+same run, and share one bounded centre and width model across every cycle. A
+dependency-free projected solve obtains non-negative traces with temporal
+regularisation broken at curated interval boundaries. Its strength is selected by
+predicting alternating held-out spectral bins in contiguous cycle blocks.
+
+The complete decomposition must retain the existing rank, condition and component-
+correlation gates, predict held-out bins with relative RMSE no greater than 0.35,
+improve by at least 5% over every model with one component removed, and keep each
+component active above noise in enough cycles. A failed gate withholds every trace in
+the group instead of manufacturing independent concentrations. Schema-3
+`empirical-v1` keeps bounded interval-average fits; the earlier fixed-centre Gaussian
+model remains available as `gaussian-v1`.
 
 Assigned formulas also derive exact natural M+1/M+2 auxiliary channels. Schema-3
 analyses build connected components wherever parent and isotope observations share a

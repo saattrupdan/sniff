@@ -2603,6 +2603,7 @@ function renderPeaks(){ const box=document.getElementById("peaksbody"); if(!box)
   const esc=s=>(s||'').replace(/"/g,'&quot;');
   const ul=document.createElement("ul"); ul.className="plist"+(showDetails?" det":"");
   for(const p of orderedPeaks()){ const li=document.createElement("li");
+    li.dataset.peakId=String(p.id);
     li.className=(p.id===selId?"sel ":"")+(p.use?"":"off");
     const dup=dupPeak(p), scope=scopeRange(), st=selState(p,scope), k=sampleLabels();
     const dot=dup?`<span class="dot ovl" title="duplicate: same compound also at m/z ${dup.mz.toFixed(3)}"></span>`:
@@ -2714,7 +2715,7 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
   const fitModel=((DATA.meta||{}).peak_fit||{}).model||'gaussian-v1';
   const fitStatus=p&&p.fit?(p.fit.status||'unknown'):null;
   const clusterNote=p&&p.clustered
-    ? '<div class="idnote warn"><b>Clustered peak:</b> '+(fitModel==='empirical-v1'?'measured-shape':'Gaussian')+' deconvolved component'+(fitStatus?' — '+fitStatus:'')+'. Unresolved fits are withheld rather than reported as independent concentrations.</div>'
+    ? '<div class="idnote warn"><b>Clustered peak:</b> '+(fitModel==='joint-temporal-v2'?'whole-run joint temporal':(fitModel==='empirical-v1'?'measured-shape':'Gaussian'))+' deconvolved component'+(fitStatus?' — '+fitStatus:'')+'. Unresolved fits are withheld rather than reported as independent concentrations.</div>'
     : '';
   const isotopeNote=p&&p.isotopes
     ? '<div class="idnote"><b>Natural isotopes:</b> '+p.isotopes.channels.map(ch=>'M+'+ch.order+' '+(+ch.mz).toFixed(4)+' expected '+pct(ch.ratio_expected)+(ch.ratio_observed==null?' · '+ch.status:' / observed '+pct(ch.ratio_observed))).join('<br>')+'<br>Monoisotopic fraction '+pct(p.isotopes.monoisotopic_fraction)+'. Isotope agreement supports the formula but does not prove identity.</div>'
@@ -3273,7 +3274,7 @@ function updateMethods(){
     water-cluster ratio is m/z 37 / m/z ${cfg.primarymz}; reference =
     ${cfg.href==null?"run median":cfg.href} (${hrefSource}).</p>
     <p><b>Windows:</b> ${windows} (${windowSource}); manual windows remain manual. Clustered components use
-    ${(((M.peak_fit||{}).model||'gaussian-v1')==='empirical-v1')?'a measured empirical line shape with bounded interval fits':'the legacy fixed Gaussian model'}.
+    ${(((M.peak_fit||{}).model||'gaussian-v1')==='joint-temporal-v2')?'a shared whole-run empirical line shape with non-negative temporally regularised traces and held-out reduced-model checks':((((M.peak_fit||{}).model||'gaussian-v1')==='empirical-v1')?'a measured empirical line shape with bounded interval fits':'the legacy fixed Gaussian model')}.
     Transmission uses ${trans}. Natural-isotope mode is <b>${M.isotope_mode||'off'}</b> with abundance basis
     <b>${M.isotope_abundance_basis||'unknown'}</b>. Concentration is <b>${conc}</b>.</p>
     <p><b>Contextual compound prior:</b> ${interests.length?interestNames:'none supplied'}.

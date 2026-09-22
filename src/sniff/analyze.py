@@ -49,7 +49,7 @@ from contextlib import ExitStack
 import h5py
 import numpy as np
 
-from . import catalogue, formula_id, fragmentation, ion_roles, isotopes, ptrms
+from . import catalogue, formula_id, fragmentation, ion_roles, isotopes, ptrms, ringing
 
 _ANALYSIS_DEFAULTS = {
     "R": 1200.0,
@@ -150,16 +150,20 @@ def resolve_analysis_settings(config=None, args=None):
         else:
             settings[key] = default
             sources[key] = "legacy default"
-    if settings["peak_fit"] not in ("gaussian-v1", "empirical-v1"):
-        raise ValueError("peak_fit must be gaussian-v1 or empirical-v1")
+    if settings["peak_fit"] not in (
+        "gaussian-v1",
+        "empirical-v1",
+        "joint-temporal-v2",
+    ):
+        raise ValueError(
+            "peak_fit must be gaussian-v1, empirical-v1, or joint-temporal-v2"
+        )
     if settings["isotope_mode"] not in (
         "off",
         "formula-v1",
         "formula-envelope-v2",
     ):
-        raise ValueError(
-            "isotope_mode must be off, formula-v1, or formula-envelope-v2"
-        )
+        raise ValueError("isotope_mode must be off, formula-v1, or formula-envelope-v2")
     if settings["isotope_abundance_basis"] not in (
         "unknown",
         "calibrated",
@@ -584,9 +588,7 @@ def annotate_peaks(
                 "ppm": 10.0,
                 "mDa": 10.0 * mz / 1000.0,
                 "proposal_ppm": ptrms.FORMULA_PROPOSAL_TOLERANCE_PPM,
-                "proposal_mDa": (
-                    ptrms.FORMULA_PROPOSAL_TOLERANCE_PPM * mz / 1000.0
-                ),
+                "proposal_mDa": (ptrms.FORMULA_PROPOSAL_TOLERANCE_PPM * mz / 1000.0),
                 "score_sigma_ppm": 4.0,
                 "candidate_generation_allowed": True,
                 "automatic_assignment_allowed": False,
@@ -688,9 +690,7 @@ def annotate_peaks(
                 and 0.008 < mz - q["mz"] < 0.4
                 and q.get("height", 0) > 20 * max(h, 1)
             ):
-                flags.append(
-                    f"possible high-side shoulder of taller m/z {q['mz']:.3f}"
-                )
+                flags.append(f"possible high-side shoulder of taller m/z {q['mz']:.3f}")
                 break
         # low-prominence noise: an apex that barely rises above its local baseline
         # is a ripple/shoulder on a taller peak's flank, not a resolved peak. Catches
@@ -699,12 +699,7 @@ def annotate_peaks(
         # away. Requires BOTH a small absolute rise and a small fraction of its own
         # height, so a genuinely isolated small peak (which rises from ~0) is kept.
         prom = p.get("prominence")
-        if (
-            not cands
-            and prom is not None
-            and prom < 10.0
-            and prom < 0.2 * max(h, 1)
-        ):
+        if not cands and prom is not None and prom < 10.0 and prom < 0.2 * max(h, 1):
             flags.append(
                 f"low prominence ({prom:.1f} cps above local baseline) — likely a "
                 "noise ripple / shoulder of a nearby taller peak"
@@ -717,8 +712,10 @@ def annotate_peaks(
         # (ammonia at 18.03 sits BELOW the primary and is untouched), so peaks there
         # — which are high-prominence and thus escape the ripple test — are flagged
         # as reagent-region artifacts, not analytes.
-        if not cands and 19.05 < mz < 20.95 and not any(
-            fl.startswith("reagent/cluster") for fl in flags
+        if (
+            not cands
+            and 19.05 < mz < 20.95
+            and not any(fl.startswith("reagent/cluster") for fl in flags)
         ):
             flags.append(
                 "H3O+ primary saturation region (m/z 19–21) — detector "
@@ -742,9 +739,7 @@ def _annotate_timebin_ringing(peaks, traces, mass_axis):
             "index": index,
             "mz": float(peak.get("apex", peak["mz"])),
             "trace_mz": float(peak["mz"]),
-            "timebin": float(
-                mass_axis.m_to_tb(float(peak.get("apex", peak["mz"])))
-            ),
+            "timebin": float(mass_axis.m_to_tb(float(peak.get("apex", peak["mz"])))),
             "height": max(0.0, float(peak.get("height", 0.0))),
             "prominence": max(0.0, float(peak.get("prominence", 0.0))),
         }
@@ -772,9 +767,7 @@ def _annotate_timebin_ringing(peaks, traces, mass_axis):
                 or parent["height"] < 2.0 * max(child["height"], 1.0)
                 or parent["prominence"] < 100.0
                 or parent["prominence"] < 0.3 * max(parent["height"], 1.0)
-                or _is_noise_artifact(
-                    peaks[parent["index"]].get("likely_artifact")
-                )
+                or _is_noise_artifact(peaks[parent["index"]].get("likely_artifact"))
             ):
                 continue
             delay = child["timebin"] - parent["timebin"]
@@ -826,6 +819,59 @@ def _annotate_timebin_ringing(peaks, traces, mass_axis):
     if not modes:
         return
 
+    selected = {}
+    references = {mode["delay_timebins"]: [] for mode in modes}
+    for child in records:
+        for mode in modes:
+            options = [
+                pair
+                for pair in pairs
+                if pair["child"]["index"] == child["index"]
+                and abs(pair["delay"] - mode["delay_timebins"]) <= mode_match_tolerance
+            ]
+            if not options:
+                continue
+            pair = min(
+                options,
+                key=lambda item: (
+                    abs(item["delay"] - mode["delay_timebins"]),
+                    -item["parent"]["height"],
+                ),
+            )
+            parent_trace = traces.get(pair["parent"]["trace_mz"])
+            child_trace = traces.get(child["trace_mz"])
+            if parent_trace is None or child_trace is None:
+                continue
+            correlation = fragmentation._correlation(parent_trace, child_trace)
+            metrics = ringing.response_metrics(parent_trace, child_trace)
+            item = {
+                "pair": pair,
+                "correlation": correlation,
+                "metrics": metrics,
+                "parent_id": pair["parent"]["index"],
+                "child_id": child["index"],
+                "delay": pair["delay"],
+            }
+            selected[(child["index"], mode["delay_timebins"])] = item
+            if (
+                correlation
+                and float(correlation.get("level_correlation", -1.0)) >= 0.70
+                and float(correlation.get("change_correlation", -1.0)) >= 0.60
+                and metrics.get("usable")
+            ):
+                references[mode["delay_timebins"]].append(item)
+
+    for mode in modes:
+        delay = mode["delay_timebins"]
+        mode_items = [
+            item
+            for (child_id, mode_delay), item in selected.items()
+            if mode_delay == delay
+        ]
+        families = ringing.response_families(mode_items)
+        for item in mode_items:
+            item["family_id"] = families.get(item["parent_id"], item["parent_id"])
+
     for child in records:
         peak = peaks[child["index"]]
         if (
@@ -841,28 +887,53 @@ def _annotate_timebin_ringing(peaks, traces, mass_axis):
         ):
             continue
         options = []
-        for pair in pairs:
-            if pair["child"]["index"] != child["index"]:
-                continue
-            for mode in modes:
-                residual = pair["delay"] - mode["delay_timebins"]
-                if abs(residual) <= mode_match_tolerance:
-                    options.append((abs(residual), -pair["parent"]["height"], pair, mode))
+        for mode in modes:
+            item = selected.get((child["index"], mode["delay_timebins"]))
+            if item is not None:
+                options.append(
+                    (
+                        abs(item["delay"] - mode["delay_timebins"]),
+                        -item["pair"]["parent"]["height"],
+                        item,
+                        mode,
+                    )
+                )
         if not options:
             continue
-        _, _, pair, mode = min(options, key=lambda item: (item[0], item[1]))
+        _, _, item, mode = min(options, key=lambda value: (value[0], value[1]))
+        pair = item["pair"]
         parent_mz = pair["parent"]["mz"]
-        correlation = fragmentation._correlation(
-            traces[pair["parent"]["trace_mz"]],
-            traces[child["trace_mz"]],
-        )
-        supported = bool(
+        correlation = item["correlation"]
+        temporal_support = bool(
             correlation
             and float(correlation.get("level_correlation", -1.0)) >= 0.70
             and float(correlation.get("change_correlation", -1.0)) >= 0.60
         )
+        # Connected parent/echo chains are one detector family. Exclude the complete
+        # family containing either side of this candidate, so downstream echoes cannot
+        # provide circular validation for their own ancestor.
+        reference_pairs = [
+            ref
+            for ref in references[mode["delay_timebins"]]
+            if ref.get("family_id") != item.get("family_id")
+        ]
+        response_model = ringing.fit_response_model(reference_pairs)
+        response_score = ringing.score_response(item["metrics"], response_model)
+        delay_centre = response_model.get("delay_timebins")
+        delay_mad = response_model.get("delay_mad_timebins")
+        delay_limit = max(8.0, 3.0 * float(delay_mad or 0.0))
+        delay_supported = bool(
+            delay_centre is not None
+            and abs(pair["delay"] - delay_centre) <= delay_limit
+        )
+        failed_gates = list(response_score["failed_gates"])
+        if not temporal_support:
+            failed_gates.append("temporal correlations are below 0.70/0.60")
+        if not delay_supported:
+            failed_gates.append("delay is outside the run-wide prediction interval")
+        supported = not failed_gates
         evidence = {
-            "model": "calibrated-timebin-ringing-v1",
+            "model": "calibrated-timebin-ringing-v2",
             "status": "likely" if supported else "supporting",
             "parent_mz": round(parent_mz, 4),
             "parent_trace_mz": round(pair["parent"]["trace_mz"], 4),
@@ -870,33 +941,36 @@ def _annotate_timebin_ringing(peaks, traces, mass_axis):
             "trace_mz": round(child["trace_mz"], 4),
             "delay_timebins": round(pair["delay"], 2),
             "delay_mode_timebins": mode["delay_timebins"],
-            "delay_residual_timebins": round(
-                pair["delay"] - mode["delay_timebins"], 2
-            ),
+            "delay_residual_timebins": round(pair["delay"] - mode["delay_timebins"], 2),
             "mode_parent_count": mode["parent_count"],
             "mode_seed_parent_count": mode["seed_parent_count"],
             "parent_to_child_height_ratio": round(
                 pair["parent"]["height"] / max(child["height"], 1.0), 2
             ),
             "trace_correlation": correlation,
+            "response_metrics": item["metrics"],
+            "response_model": response_model,
+            "failed_gates": failed_gates,
             "ringing_trace_thresholds": {
                 "minimum_level_correlation": 0.70,
                 "minimum_change_correlation": 0.60,
+                "maximum_held_out_nrmse": 0.35,
+                "maximum_gain_relative_mad": 0.30,
+                "minimum_independent_response_parents": 3,
                 "supported": supported,
             },
             "limitation": (
                 "formula absence is not artefact evidence; classification requires "
-                "a repeated calibrated-timebin delay and supported temporal correlation"
+                "a repeated calibrated-timebin delay, a stable run-wide response, "
+                "and held-out temporal prediction"
             ),
         }
         peak["artifact_evidence"] = evidence
         if supported:
             peak.setdefault("likely_artifact", []).append(
-                "calibrated time-bin ringing echo of taller m/z "
+                "run-wide detector-ringing echo of taller m/z "
                 f"{parent_mz:.4f} (delay {pair['delay']:.1f} bins; "
-                f"level/change correlations "
-                f"{correlation['level_correlation']:.2f}/"
-                f"{correlation['change_correlation']:.2f})"
+                f"held-out NRMSE {item['metrics']['held_out_nrmse']:.2f})"
             )
 
 
@@ -968,9 +1042,7 @@ def apply_run_fragmentation_evidence(
         drift=drift,
     )
     _annotate_timebin_ringing(peaks, evidence_traces, mass_axis)
-    interpret_peak_roles(
-        peaks, drift=drift, R_phys=R_phys, traces=evidence_traces
-    )
+    interpret_peak_roles(peaks, drift=drift, R_phys=R_phys, traces=evidence_traces)
     return context
 
 
@@ -997,9 +1069,8 @@ def apply_background_evidence(peaks, traces, ranges):
         background_values = [interval_mean(trace, item) for item in background_ranges]
         sample_values = [value for value in sample_values if value is not None]
         background_values = [value for value in background_values if value is not None]
-        if (
-            len(sample_values) != len(sample_ranges)
-            or len(background_values) != len(background_ranges)
+        if len(sample_values) != len(sample_ranges) or len(background_values) != len(
+            background_ranges
         ):
             continue
         sample_mean = float(np.mean(sample_values))
@@ -1152,9 +1223,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
                     "evidence": (
                         list(reagent_evidence.get("evidence") or [])
                         if reagent_evidence
-                        else [
-                            "reagent marker supplied by the peak annotation stage"
-                        ]
+                        else ["reagent marker supplied by the peak annotation stage"]
                     ),
                     "exclude_from_analyte_assignment": True,
                 }
@@ -1208,18 +1277,10 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
             links = peak["fragmentation_links"]
             link = links[0]
             candidate_formulas = sorted(
-                {
-                    item["parent_formula"]
-                    for item in links
-                    if item.get("parent_formula")
-                }
+                {item["parent_formula"] for item in links if item.get("parent_formula")}
             )
             compound_candidates = sorted(
-                {
-                    item["candidate_name"]
-                    for item in links
-                    if item.get("candidate_name")
-                }
+                {item["candidate_name"] for item in links if item.get("candidate_name")}
             )
             identity = link.get("candidate_name") or link.get("parent_formula")
             interpretations.append(
@@ -1323,9 +1384,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
                     predicted,
                     correlation,
                 ) = min(isotope_options, key=lambda item: item[:2])
-                parent_candidates = ion_roles.candidate_summaries(
-                    peaks[parent_index]
-                )
+                parent_candidates = ion_roles.candidate_summaries(peaks[parent_index])
                 interpretations.append(
                     {
                         "kind": "isotope",
@@ -1391,9 +1450,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
             interpretations.append(
                 {
                     "kind": "alternative-ion",
-                    "label": (
-                        f"possible {candidate['ion_notation']} ion: {identity}"
-                    ),
+                    "label": (f"possible {candidate['ion_notation']} ion: {identity}"),
                     "source": "explicit alternative PTR ion-chemistry hypothesis",
                     "candidate_formulas": sorted(
                         {item["formula"] for item in peak["ion_candidates"]}
@@ -1438,7 +1495,9 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
                     evidence = [
                         "formula generation withheld because run calibration does not "
                         "support a 10 ppm assignment radius",
-                        str(tolerance.get("reason") or "calibration residuals degraded"),
+                        str(
+                            tolerance.get("reason") or "calibration residuals degraded"
+                        ),
                     ]
                 elif peak.get("candidates"):
                     evidence = [
@@ -1571,9 +1630,7 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
             compound_name = candidate.get("preferred_name") or candidate.get("name")
             label = compound_name or (formula if assign_all_library else None)
             eligible = assign_all_library or (
-                rank == 1
-                and compound_name
-                and peak.get("id_confidence", 0) >= 0.6
+                rank == 1 and compound_name and peak.get("id_confidence", 0) >= 0.6
             )
             if label and formula and eligible:
                 identity_options.append(
@@ -1589,9 +1646,7 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
             options[index] = identity_options
 
     assignments = optimal_identity_assignments(peaks, options)
-    owners = {
-        option["formula"].upper(): index for index, option in assignments.items()
-    }
+    owners = {option["formula"].upper(): index for index, option in assignments.items()}
 
     for index, option in assignments.items():
         peaks[index]["suggested_label"] = option["label"]
@@ -1608,7 +1663,9 @@ def _assign_suggested_identities(peaks, *, assign_all_library=False):
     )
     for index in fallback_order:
         peak = peaks[index]
-        if index in assignments or not peak["suggested_label"].startswith("unknown m/z"):
+        if index in assignments or not peak["suggested_label"].startswith(
+            "unknown m/z"
+        ):
             continue
         candidates = peak.get("candidates") or []
         top = candidates[0] if candidates else None
@@ -1650,15 +1707,11 @@ def optimal_identity_assignments(peaks, options):
         key=lambda index: (
             -int(options[index][0]["interest"]),
             -float(options[index][0]["share"]),
-            -float(
-                peaks[index].get("height", peaks[index].get("abundance", 0.0))
-            ),
+            -float(peaks[index].get("height", peaks[index].get("abundance", 0.0))),
             float(peaks[index]["mz"]),
         ),
     )
-    peak_priority = {
-        index: n_peaks - rank for rank, index in enumerate(strongest)
-    }
+    peak_priority = {index: n_peaks - rank for rank, index in enumerate(strongest)}
     option_maps = {
         index: {option["formula"].upper(): option for option in options[index]}
         for index in peak_indices
@@ -1752,11 +1805,32 @@ def _is_noise_artifact(flags):
     visible until independent evidence supports exclusion.
     """
     return any(
-        ("ringing" in x)
-        or ("low prominence" in x)
-        or ("saturation region" in x)
+        ("ringing" in x) or ("low prominence" in x) or ("saturation region" in x)
         for x in (flags or [])
     )
+
+
+def _ringing_artifact_diagnostics(peaks):
+    statuses = [
+        peak["artifact_evidence"]["status"]
+        for peak in peaks
+        if peak.get("artifact_evidence", {}).get("model")
+        == "calibrated-timebin-ringing-v2"
+    ]
+    return {
+        "model": "calibrated-timebin-ringing-v2",
+        "likely": statuses.count("likely"),
+        "supporting_only": statuses.count("supporting"),
+        "decision": (
+            "likely requires a repeated calibrated-timebin delay, at least three "
+            "independent response families, stable gain, held-out prediction, and "
+            "parent/satellite level and change co-variation"
+        ),
+        "limitation": (
+            "formula absence, low mass, or a shared sample pattern alone never marks "
+            "a detector artefact"
+        ),
+    }
 
 
 def _compact_peak(e):
@@ -1873,25 +1947,7 @@ def cmd_peaks(args):
     # list straight into a config can't ship a noise comb; reagent/cluster diagnostic
     # ions stay (labelled). --include-artifacts shows the raw list with every flag.
     include_art = getattr(args, "include_artifacts", False)
-    ringing_statuses = [
-        peak["artifact_evidence"]["status"]
-        for peak in peaks
-        if peak.get("artifact_evidence", {}).get("model")
-        == "calibrated-timebin-ringing-v1"
-    ]
-    artifact_diagnostics = {
-        "model": "calibrated-timebin-ringing-v1",
-        "likely": ringing_statuses.count("likely"),
-        "supporting_only": ringing_statuses.count("supporting"),
-        "decision": (
-            "likely requires a repeated calibrated-timebin delay across several "
-            "parent peaks plus parent/satellite level and change co-variation"
-        ),
-        "limitation": (
-            "formula absence, low mass, or a shared sample pattern alone never marks "
-            "a detector artefact"
-        ),
-    }
+    artifact_diagnostics = _ringing_artifact_diagnostics(peaks)
     n_noise = sum(1 for p in peaks if _is_noise_artifact(p.get("likely_artifact")))
     if not include_art:
         peaks = [p for p in peaks if not _is_noise_artifact(p.get("likely_artifact"))]
@@ -1900,7 +1956,10 @@ def cmd_peaks(args):
     n_ovl = sum(1 for p in peaks if p.get("overlap"))
     n_with_formula_proposals = sum(bool(p.get("candidates")) for p in peaks)
     n_mass_validated = sum(
-        any(candidate.get("assignment_eligible", True) for candidate in p.get("candidates", []))
+        any(
+            candidate.get("assignment_eligible", True)
+            for candidate in p.get("candidates", [])
+        )
         for p in peaks
     )
     candidate_coverage = ion_roles.coverage_summary(peaks)
@@ -2115,9 +2174,7 @@ def auto_peaks(
     avg = np.where(
         np.isfinite(f["SPECdata/AverageSpec"][:]), f["SPECdata/AverageSpec"][:], 0.0
     )
-    if not assess_signal(
-        f, avg=avg, a=a, b=b, mass_axis=mass_axis
-    )["signal_present"]:
+    if not assess_signal(f, avg=avg, a=a, b=b, mass_axis=mass_axis)["signal_present"]:
         return []
     peaks = detect_peaks(
         f,
@@ -2141,9 +2198,7 @@ def auto_peaks(
     )
     peaks = [p for p in peaks if not _is_noise_artifact(p.get("likely_artifact"))]
     peaks = _merge_overlapping_windows(peaks, R=R)
-    _assign_suggested_identities(
-        peaks, assign_all_library=assign_all_library
-    )
+    _assign_suggested_identities(peaks, assign_all_library=assign_all_library)
     interpret_peak_roles(peaks)
     out = []
     for p in peaks:
@@ -2500,11 +2555,7 @@ def cmd_analyze(args):
     rel = np.array([apexes[m] / m for m in masses])
     drift = 1.0 if mass_axis.applied else float(np.median(rel))
     for m in masses:
-        resid_da = (
-            apexes[m] - m
-            if mass_axis.applied
-            else (apexes[m] / m - drift) * m
-        )
+        resid_da = apexes[m] - m if mass_axis.applied else (apexes[m] / m - drift) * m
         if abs(resid_da) > 0.03:
             warn.append(
                 f"m{m:.3f}: apex {apexes[m]:.4f} deviates "
@@ -2720,6 +2771,7 @@ def cmd_viz(args):
             args.h5, cfg, args.out, args.sep, args.include_cycle_rows
         )
         spec_fn = lambda lo, hi: interval_spectrum(args.h5, lo, hi)
+
         def peak_preview_fn(lo, hi):
             with h5py.File(args.h5, "r") as source:
                 axis = ptrms.load_mass_axis(source)

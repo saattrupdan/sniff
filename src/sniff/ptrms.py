@@ -13,6 +13,7 @@ User inputs (experiment-specific, not in the raw file):
 
 import copy
 import json
+import tempfile
 from importlib import resources
 
 import numpy as np
@@ -151,12 +152,8 @@ def formula_assignment_tolerance(mass_axis, mz):
         "proposal_ppm": FORMULA_PROPOSAL_TOLERANCE_PPM,
         "proposal_mDa": FORMULA_PROPOSAL_TOLERANCE_PPM * ion_mz / 1000.0,
         "score_sigma_ppm": float(model["score_sigma_ppm"]),
-        "candidate_generation_allowed": bool(
-            model["candidate_generation_allowed"]
-        ),
-        "automatic_assignment_allowed": bool(
-            model["automatic_assignment_allowed"]
-        ),
+        "candidate_generation_allowed": bool(model["candidate_generation_allowed"]),
+        "automatic_assignment_allowed": bool(model["automatic_assignment_allowed"]),
     }
 
 
@@ -185,9 +182,7 @@ def _derive_reference_stability(anchors, scale, offset):
                 "mz": target,
                 "n_blocks": len(centres),
                 "median_ppm": median,
-                "robust_sigma_ppm": float(
-                    1.4826 * np.median(np.abs(values - median))
-                ),
+                "robust_sigma_ppm": float(1.4826 * np.median(np.abs(values - median))),
                 "max_abs_ppm": float(np.max(np.abs(values))),
             }
         )
@@ -224,9 +219,7 @@ def _derive_formula_tolerance_model(f, a, b):
                 design = np.column_stack(
                     [np.sqrt(training[:, 0]), np.ones(training.shape[0])]
                 )
-                held_a, held_b = np.linalg.lstsq(
-                    design, training[:, 1], rcond=None
-                )[0]
+                held_a, held_b = np.linalg.lstsq(design, training[:, 1], rcond=None)[0]
                 fitted_mass = ((timebin - held_b) / held_a) ** 2
                 residuals.append((fitted_mass - mass) / mass * 1e6)
             residuals = np.asarray(residuals, dtype=np.float64)
@@ -241,8 +234,7 @@ def _derive_formula_tolerance_model(f, a, b):
             "source": "no held-out multi-point Mapping prediction residuals",
             "status": "fallback",
             "reason": (
-                "fewer than three usable calibration references for held-out "
-                "validation"
+                "fewer than three usable calibration references for held-out validation"
             ),
             "mass_error_convention": "1e6 * (observed - theoretical) / theoretical",
             "minimum_ppm": FORMULA_TOLERANCE_FLOOR_PPM,
@@ -281,9 +273,7 @@ def _derive_formula_tolerance_model(f, a, b):
         "safety_margin_ppm": FORMULA_TOLERANCE_MARGIN_PPM,
         "q95_abs_ppm": q95_abs,
         "tolerance_ppm": tolerance_ppm,
-        "score_sigma_ppm": max(
-            FORMULA_SCORE_SIGMA_FLOOR_PPM, tolerance_ppm / 2.5
-        ),
+        "score_sigma_ppm": max(FORMULA_SCORE_SIGMA_FLOOR_PPM, tolerance_ppm / 2.5),
         "candidate_generation_allowed": True,
         "automatic_assignment_allowed": accepted,
         "calibration_points": points,
@@ -400,9 +390,7 @@ def validate_mass_axis(mass_axis):
                 raise TypeError
             masses = np.asarray([float(point["mz"]) for point in points])
             timebins = np.asarray([float(point["timebin"]) for point in points])
-            residuals = np.asarray(
-                [float(point["residual_ppm"]) for point in points]
-            )
+            residuals = np.asarray([float(point["residual_ppm"]) for point in points])
             expected = (((timebins - file_b) / file_a) ** 2 - masses) / masses * 1e6
             tolerance = diagnostics["formula_assignment_tolerance"]
             tolerance_points = tolerance["calibration_points"]
@@ -419,9 +407,9 @@ def validate_mass_axis(mass_axis):
                 design = np.column_stack(
                     [np.sqrt(training_masses), np.ones(training_masses.size)]
                 )
-                held_a, held_b = np.linalg.lstsq(
-                    design, training_timebins, rcond=None
-                )[0]
+                held_a, held_b = np.linalg.lstsq(design, training_timebins, rcond=None)[
+                    0
+                ]
                 fitted_mass = ((timebin - held_b) / held_a) ** 2
                 held_out_residuals.append((fitted_mass - mass) / mass * 1e6)
             held_out_residuals = np.asarray(held_out_residuals)
@@ -445,12 +433,9 @@ def validate_mass_axis(mass_axis):
                 or not np.all(np.diff(masses) > 0)
                 or not np.all(np.diff(timebins) > 0)
                 or not np.allclose(residuals, expected, rtol=0, atol=1e-9)
-                or np.any(
-                    np.abs(residuals) > MAPPING_MAX_RELATIVE_MASS_ERROR * 1e6
-                )
+                or np.any(np.abs(residuals) > MAPPING_MAX_RELATIVE_MASS_ERROR * 1e6)
                 or tolerance.get("model") != FORMULA_TOLERANCE_MODEL
-                or tolerance.get("status")
-                != ("accepted" if accepted else "degraded")
+                or tolerance.get("status") != ("accepted" if accepted else "degraded")
                 or not np.isclose(
                     float(tolerance["q95_abs_ppm"]), q95_abs, rtol=0, atol=1e-12
                 )
@@ -617,7 +602,11 @@ def validate_mass_axis(mass_axis):
                     raise TypeError
                 for status, centre in zip(statuses, centres):
                     if status == "accepted":
-                        if not numeric(centre) or not np.isfinite(centre) or centre <= 0:
+                        if (
+                            not numeric(centre)
+                            or not np.isfinite(centre)
+                            or centre <= 0
+                        ):
                             raise TypeError
                     elif centre is not None:
                         raise TypeError
@@ -650,8 +639,7 @@ def validate_mass_axis(mass_axis):
                 valid = (
                     not points
                     and tolerance_ppm == FORMULA_TOLERANCE_MAX_PPM
-                    and sigma_ppm
-                    == FORMULA_TOLERANCE_MAX_PPM / 2.5
+                    and sigma_ppm == FORMULA_TOLERANCE_MAX_PPM / 2.5
                     and tolerance_model["candidate_generation_allowed"] is True
                     and tolerance_model["automatic_assignment_allowed"] is False
                 )
@@ -688,7 +676,9 @@ def validate_mass_axis(mass_axis):
                         rtol=0,
                         atol=1e-12,
                     )
-                    and np.isclose(tolerance_ppm, expected_tolerance, rtol=0, atol=1e-12)
+                    and np.isclose(
+                        tolerance_ppm, expected_tolerance, rtol=0, atol=1e-12
+                    )
                     and np.isclose(
                         sigma_ppm,
                         max(FORMULA_SCORE_SIGMA_FLOOR_PPM, tolerance_ppm / 2.5),
@@ -785,11 +775,8 @@ def _historical_axis_for_migration(config, mass_axis):
             for anchor in anchors:
                 observed = float(anchor["observed_file_mz"])
                 target = required[anchor["name"]]
-                if (
-                    anchor.get("status") != "accepted"
-                    or not np.isclose(
-                        scale * observed + offset, target, rtol=0, atol=1e-8
-                    )
+                if anchor.get("status") != "accepted" or not np.isclose(
+                    scale * observed + offset, target, rtol=0, atol=1e-8
                 ):
                     raise TypeError
             return MassAxisCalibration(a, b, scale=scale, offset=offset)
@@ -803,14 +790,11 @@ def _historical_axis_for_migration(config, mass_axis):
         )
 
     anchors = mass_axis.diagnostics.get("anchors")
-    required = {
-        name: float(target) for name, target in LEGACY_INTERNAL_MASS_ANCHORS
-    }
+    required = {name: float(target) for name, target in LEGACY_INTERNAL_MASS_ANCHORS}
     try:
-        if (
-            not isinstance(anchors, list)
-            or {anchor.get("name") for anchor in anchors} != set(required)
-        ):
+        if not isinstance(anchors, list) or {
+            anchor.get("name") for anchor in anchors
+        } != set(required):
             raise TypeError
         observed = {}
         for anchor in anchors:
@@ -1118,9 +1102,8 @@ def _authoritative_mapping_evidence(f, a, b):
         return None
     inferred = ((timebins - float(b)) / float(a)) ** 2
     residuals = (inferred - masses) / masses * 1e6
-    if (
-        not np.isfinite(residuals).all()
-        or np.any(np.abs(residuals) > MAPPING_MAX_RELATIVE_MASS_ERROR * 1e6)
+    if not np.isfinite(residuals).all() or np.any(
+        np.abs(residuals) > MAPPING_MAX_RELATIVE_MASS_ERROR * 1e6
     ):
         return None
     return {
@@ -1334,9 +1317,7 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
     )
     for anchor in anchors:
         anchor["corrected_mz"] = float(scale * anchor["observed_file_mz"] + offset)
-    base["reference_stability"] = _derive_reference_stability(
-        anchors, scale, offset
-    )
+    base["reference_stability"] = _derive_reference_stability(anchors, scale, offset)
     base["formula_assignment_tolerance"] = formula_tolerance
     calibration = MassAxisCalibration(
         a, b, scale=scale, offset=offset, diagnostics=base
@@ -1960,11 +1941,7 @@ def _cluster_design(
     )
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
         gram = G.T @ G
-    if (
-        rank == len(centers_m)
-        and condition <= 1e8
-        and np.isfinite(gram).all()
-    ):
+    if rank == len(centers_m) and condition <= 1e8 and np.isfinite(gram).all():
         ridge = max(
             float(np.trace(gram)) / max(len(centers_m), 1) * 1e-8,
             1e-12,
@@ -2036,11 +2013,13 @@ def _profile_report(profile):
 
 def _fit_report(masses, fitted, n_reference_peaks):
     def _finite(value):
-        return round(float(value), 6) if np.isfinite(value) else None
+        return (
+            round(float(value), 6) if value is not None and np.isfinite(value) else None
+        )
 
-    return {
+    report = {
         "masses": [float(mass) for mass in masses],
-        "method": "empirical-v1",
+        "method": fitted.get("model", "empirical-v1"),
         "status": fitted["status"],
         "reason": fitted["reason"],
         "n_reference_peaks": int(n_reference_peaks),
@@ -2051,6 +2030,29 @@ def _fit_report(masses, fitted, n_reference_peaks):
         "component_correlation": _finite(fitted["correlation"]),
         "relative_residual": _finite(fitted["relative_residual"]),
     }
+    if fitted.get("model") == "joint-temporal-v2":
+        report.update(
+            {
+                "selected_lambda": _finite(fitted.get("selected_lambda")),
+                "selected_lambda_multiplier": _finite(
+                    fitted.get("selected_lambda_multiplier")
+                ),
+                "held_out_relative_rmse": _finite(fitted.get("held_out_relative_rmse")),
+                "held_out_standard_error": _finite(
+                    fitted.get("held_out_standard_error")
+                ),
+                "best_reduced_relative_rmse": _finite(
+                    fitted.get("best_reduced_relative_rmse")
+                ),
+                "held_out_improvement": _finite(fitted.get("held_out_improvement")),
+                "held_out_shift_span": _finite(fitted.get("held_out_shift_span")),
+                "held_out_width_span": _finite(fitted.get("held_out_width_span")),
+                "active_cycle_counts": fitted.get("active_cycle_counts", []),
+                "minimum_active_cycles": fitted.get("minimum_active_cycles"),
+                "failed_gates": fitted.get("failed_gates", []),
+            }
+        )
+    return report
 
 
 def extract_traces(
@@ -2096,9 +2098,9 @@ def extract_traces(
     through the second. It is 89 % of the ~33 s an open costs in total.
     should_stop: optional callback polled once per block in both passes; when it
     returns true the pass raises AnalysisCancelled. ``peak_fit_model`` may be the
-    historical ``gaussian-v1`` or measured-shape ``empirical-v1``. Diagnostics are
-    written into the optional mutable ``fit_diagnostics`` mapping. All additions
-    default to the historical arithmetic.
+    historical ``gaussian-v1``, measured-shape ``empirical-v1``, or whole-run
+    ``joint-temporal-v2``. Diagnostics are written into the optional mutable
+    ``fit_diagnostics`` mapping. All additions default to the historical arithmetic.
     """
     if mass_axis is None:
         mass_axis = load_mass_axis(f)
@@ -2159,7 +2161,7 @@ def extract_traces(
     }
     iso_buf = {m: np.empty(ncyc) for m in isolated}
     empirical_profile = None
-    if peak_fit_model == "empirical-v1":
+    if peak_fit_model in ("empirical-v1", "joint-temporal-v2"):
         isolated_tb = [m_to_tb(apexes[m], a, b, mass_axis) for m in isolated]
         isolated_sigma = [
             _sigma_tb(apexes[m], a, R_phys, mass_axis=mass_axis) for m in isolated
@@ -2191,20 +2193,24 @@ def extract_traces(
                 norm = np.zeros(len(g))
                 for k, (m, measured) in enumerate(zip(g, shifted_m)):
                     hw_l, hw_r = _hw_for(m, measured, R, windows)
-                    wl, wr = peak_window_lr(
-                        measured, a, b, hw_l, hw_r, mass_axis
-                    )
+                    wl, wr = peak_window_lr(measured, a, b, hw_l, hw_r, mass_axis)
                     left = max(0, wl - fitted["lo"])
                     right = min(fitted["components"].shape[0], wr - fitted["lo"])
                     norm[k] = fitted["components"][left:right, k].sum()
                 design = {
-                    "method": "empirical-v1",
+                    "method": peak_fit_model,
                     "fit": fitted,
                     "norm": norm,
+                    "shape": {
+                        "x": np.arange(fitted["lo"], fitted["hi"], dtype=np.float64),
+                        "centres": centers_tb,
+                        "sigmas": sigmas_tb,
+                        "profile_x": np.asarray(empirical_profile["x"]),
+                        "profile_y": np.asarray(empirical_profile["y"]),
+                    },
                 }
-                report = _fit_report(
-                    g, fitted, empirical_profile["n_reference_peaks"]
-                )
+                report = _fit_report(g, fitted, empirical_profile["n_reference_peaks"])
+                report["method"] = peak_fit_model
                 if not empirical_profile["usable"]:
                     report["method"] = "gaussian-fallback-v1"
                     report["fallback_reason"] = empirical_profile["reason"]
@@ -2250,6 +2256,50 @@ def extract_traces(
             )
         cluster_design.append(design)
     cluster_buf = [np.empty((ncyc, len(g))) for g in clusters]
+    cluster_windows = [None] * len(clusters)
+    cluster_window_files = [None] * len(clusters)
+    if peak_fit_model == "joint-temporal-v2":
+        widths = [
+            design["fit"]["hi"] - design["fit"]["lo"]
+            for design in cluster_design
+            if design["method"] == "joint-temporal-v2"
+        ]
+        stored_bytes = sum(ncyc * width * 4 for width in widths)
+        largest_float64_window = ncyc * max(widths, default=0) * 8
+        output_bytes = sum(ncyc * len(group) * 8 for group in clusters)
+        estimated_working_bytes = 3 * largest_float64_window + output_bytes
+        memory_limit = 512 * 1024 * 1024
+        storage_limit = 2 * 1024 * 1024 * 1024
+        if estimated_working_bytes <= memory_limit and stored_bytes <= storage_limit:
+            for index, design in enumerate(cluster_design):
+                if design["method"] == "joint-temporal-v2":
+                    width = design["fit"]["hi"] - design["fit"]["lo"]
+                    handle = tempfile.TemporaryFile()
+                    handle.truncate(ncyc * width * 4)
+                    cluster_window_files[index] = handle
+                    cluster_windows[index] = np.memmap(
+                        handle,
+                        mode="r+",
+                        dtype=np.float32,
+                        shape=(ncyc, width),
+                    )
+        else:
+            for index, design in enumerate(cluster_design):
+                if design["method"] != "joint-temporal-v2":
+                    continue
+                cluster_design[index] = {"method": "unresolved"}
+                cluster_reports[index].update(
+                    {
+                        "status": "unresolved",
+                        "reason": (
+                            "whole-run fit exceeds the 512 MiB memory or 2 GiB "
+                            "temporary-storage limit"
+                        ),
+                        "failed_gates": [
+                            "whole-run fit exceeds its memory or storage limit"
+                        ],
+                    }
+                )
     if fit_diagnostics is not None:
         fit_diagnostics.clear()
         fit_diagnostics.update(
@@ -2266,7 +2316,11 @@ def extract_traces(
     # and 13.9 s — so reporting only this pass would leave the bar sitting at 100 %
     # for the whole of the second one. The pass is one axis, not two. With no
     # intervals to re-centre the span is just ncyc, which is the plain axis.
-    span = ncyc + sum(hi - lo + 1 for lo, hi in want_ranges.values())
+    global_fit_count = sum(
+        design["method"] == "joint-temporal-v2" for design in cluster_design
+    )
+    global_fit_work = global_fit_count * ncyc
+    span = ncyc + global_fit_work + sum(hi - lo + 1 for lo, hi in want_ranges.values())
 
     for i in range(0, ncyc, block):
         if should_stop is not None and should_stop():
@@ -2278,7 +2332,10 @@ def extract_traces(
             wl, wr = win_tb[m]
             iso_buf[m][i:j] = chunk[:, wl:wr].sum(axis=1)
         for ci, design in enumerate(cluster_design):
-            if design["method"] == "empirical-v1":
+            if design["method"] == "joint-temporal-v2":
+                fitted = design["fit"]
+                cluster_windows[ci][i:j] = chunk[:, fitted["lo"] : fitted["hi"]]
+            elif design["method"] == "empirical-v1":
                 fitted = design["fit"]
                 if fitted["status"] == "reliable":
                     amplitudes = peak_fit.apply_group_design(chunk, fitted)
@@ -2303,6 +2360,60 @@ def extract_traces(
         if progress is not None:
             progress(min(j, span) / span)
 
+    read = ncyc
+    if peak_fit_model == "joint-temporal-v2":
+        breaks = sorted(
+            {
+                boundary
+                for lo, hi in want_ranges.values()
+                for boundary in (lo - 1, hi)
+                if 0 < boundary < ncyc
+            }
+        )
+        for index, (group, design) in enumerate(zip(clusters, cluster_design)):
+            if design["method"] != "joint-temporal-v2":
+                cluster_buf[index][:] = np.nan
+                continue
+            if should_stop is not None and should_stop():
+                raise AnalysisCancelled("the analysis was cancelled")
+            spectral_window = cluster_windows[index]
+            cluster_windows[index] = None
+            spectral_window.flush()
+            fit_base = read
+
+            def _fit_progress(fraction):
+                if progress is not None:
+                    progress(min(fit_base + fraction * ncyc, span) / span)
+
+            try:
+                fitted = peak_fit.fit_global_group(
+                    spectral_window,
+                    design["fit"],
+                    breaks=breaks,
+                    shape=design["shape"],
+                    should_stop=should_stop,
+                    progress=_fit_progress,
+                )
+            except peak_fit.PeakFitCancelled as exc:
+                raise AnalysisCancelled("the analysis was cancelled") from exc
+            del spectral_window
+            handle = cluster_window_files[index]
+            cluster_window_files[index] = None
+            if handle is not None:
+                handle.close()
+            design["fit"] = fitted
+            report = _fit_report(group, fitted, empirical_profile["n_reference_peaks"])
+            if not empirical_profile["usable"]:
+                report["fallback_reason"] = empirical_profile["reason"]
+            cluster_reports[index] = report
+            if fitted["status"] == "reliable":
+                cluster_buf[index][:] = fitted["amplitudes"] * design["norm"][None, :]
+            else:
+                cluster_buf[index][:] = np.nan
+            read += ncyc
+            if progress is not None:
+                progress(min(read, span) / span)
+
     traces = {}
     for m in isolated:
         traces[m] = iso_buf[m]
@@ -2313,7 +2424,7 @@ def extract_traces(
     # second pass over ONLY each interval's cycles: re-centre each isolated peak on
     # that interval's average spectrum and overwrite those cycles (clustered peaks
     # keep their whole-run deconvolved trace)
-    read = ncyc  # cycles consumed over both passes: the one progress axis
+    # ``read`` already includes the streaming pass and any whole-run fits.
     for lbl, (lo, hi) in want_ranges.items():
         if not rcnt[lbl]:
             continue
@@ -2340,7 +2451,7 @@ def extract_traces(
                 mass_axis=mass_axis,
             )
         range_cluster_design = []
-        if empirical_profile is not None:
+        if peak_fit_model == "empirical-v1" and empirical_profile is not None:
             for cluster_index, group in enumerate(clusters):
                 centres_tb = np.array(
                     [m_to_tb(apexes[m], a, b, mass_axis) for m in group]
@@ -2929,22 +3040,14 @@ def normalise_evidence_traces(
     the original extracted traces and its explicit provenance.
     """
     if primary is None:
-        primary = extract_primary(
-            f, primary_mz=primary_mz, R=R, mass_axis=mass_axis
-        )
-    primary = (
-        np.asarray(primary, dtype=np.float64)
-        if primary is not None
-        else None
-    )
+        primary = extract_primary(f, primary_mz=primary_mz, R=R, mass_axis=mass_axis)
+    primary = np.asarray(primary, dtype=np.float64) if primary is not None else None
     tm, tf = load_transmission(f)
     trace_lengths = {
         np.asarray(trace, dtype=np.float64).shape for trace in traces.values()
     }
     primary_available = (
-        primary is not None
-        and primary.ndim == 1
-        and trace_lengths == {primary.shape}
+        primary is not None and primary.ndim == 1 and trace_lengths == {primary.shape}
     )
     if diagnostics is not None:
         diagnostics.update(
@@ -3064,9 +3167,7 @@ def quantify(
             isotope_plan,
             abundance_basis=isotope_abundance_basis,
         )
-        parent_masses = {
-            float(mass) for mass in isotope_plan.get("analyte_masses", [])
-        }
+        parent_masses = {float(mass) for mass in isotope_plan.get("analyte_masses", [])}
     else:
         net_corrected = corrected
         parent_masses = set(traces)

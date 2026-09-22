@@ -3,7 +3,12 @@
 import numpy as np
 from calibration_helpers import identity_mass_axis
 
-from sniff.analyze import _annotate_timebin_ringing, _is_noise_artifact
+from sniff import ringing
+from sniff.analyze import (
+    _annotate_timebin_ringing,
+    _is_noise_artifact,
+    _ringing_artifact_diagnostics,
+)
 
 
 def _mass_after_delay(axis, mass, delay):
@@ -74,7 +79,7 @@ def test_repeated_timebin_echo_requires_supported_parent_trace():
         ]
     )
     traces[supported_parent_trace] = trace
-    traces[supported_child_trace] = trace * 0.3
+    traces[supported_child_trace] = trace * 0.01
     traces[unsupported_parent] = trace
     traces[unsupported_child] = trace[::-1]
 
@@ -84,6 +89,9 @@ def test_repeated_timebin_echo_requires_supported_parent_trace():
     unsupported = next(peak for peak in peaks if peak["mz"] == unsupported_child)
     assert supported["artifact_evidence"]["status"] == "likely"
     assert "ringing echo" in supported["likely_artifact"][0]
+    assert supported["artifact_evidence"]["model"].endswith("ringing-v2")
+    assert supported["artifact_evidence"]["response_model"]["parent_count"] >= 3
+    assert supported["artifact_evidence"]["response_metrics"]["held_out_nrmse"] < 0.01
     assert supported["artifact_evidence"]["mode_seed_parent_count"] >= 3
     assert supported["artifact_evidence"]["parent_mz"] == supported_parent
     assert supported["artifact_evidence"]["parent_trace_mz"] == supported_parent_trace
@@ -91,10 +99,103 @@ def test_repeated_timebin_echo_requires_supported_parent_trace():
     assert not unsupported.get("likely_artifact")
 
 
-def test_mass_only_shoulder_hint_is_not_default_filtered():
-    assert not _is_noise_artifact(
-        ["possible high-side shoulder of taller m/z 41.067"]
+def test_response_model_rejects_inconsistent_candidate_gain():
+    cycles = np.arange(160, dtype=np.float64)
+    parent = 100.0 + 20.0 * np.sin(cycles / 13.0)
+    references = []
+    for index, gain in enumerate((0.0098, 0.0100, 0.0102, 0.0101)):
+        metrics = ringing.response_metrics(parent, gain * parent)
+        references.append(
+            {
+                "parent_id": index,
+                "delay": 309.0 + 0.2 * index,
+                "metrics": metrics,
+            }
+        )
+    model = ringing.fit_response_model(references)
+    candidate = ringing.response_metrics(parent, 0.03 * parent)
+    score = ringing.score_response(candidate, model)
+
+    assert model["reliable"]
+    assert not score["supported"]
+    assert any("prediction interval" in gate for gate in score["failed_gates"])
+
+
+def test_response_model_counts_only_individually_valid_parents():
+    cycles = np.arange(160, dtype=np.float64)
+    parent = 100.0 + 20.0 * np.sin(cycles / 13.0)
+    references = []
+    for index in range(2):
+        references.append(
+            {
+                "parent_id": index,
+                "delay": 309.0,
+                "metrics": ringing.response_metrics(parent, 0.01 * parent),
+            }
+        )
+    bad = ringing.response_metrics(parent, np.roll(0.01 * parent, 40))
+    references.append({"parent_id": 2, "delay": 309.0, "metrics": bad})
+
+    model = ringing.fit_response_model(references)
+
+    assert not model["reliable"]
+    assert model["reason"] == "fewer than three independent response parents"
+
+
+def test_connected_echo_chain_counts_as_one_response_family():
+    metrics = {
+        "usable": True,
+        "held_out_nrmse": 0.01,
+        "gain_relative_mad": 0.01,
+        "gain": 0.01,
+    }
+    pairs = [
+        {"parent_id": 1, "child_id": 2, "delay": 309.0, "metrics": metrics},
+        {"parent_id": 2, "child_id": 3, "delay": 309.0, "metrics": metrics},
+        {"parent_id": 3, "child_id": 4, "delay": 309.0, "metrics": metrics},
+    ]
+    families = ringing.response_families(pairs)
+    for pair in pairs:
+        pair["family_id"] = families[pair["parent_id"]]
+
+    model = ringing.fit_response_model(pairs)
+
+    assert len(set(families.values())) == 1
+    assert not model["reliable"]
+    assert "three independent" in model["reason"]
+
+
+def test_ringing_summary_counts_version_two_evidence():
+    summary = _ringing_artifact_diagnostics(
+        [
+            {
+                "artifact_evidence": {
+                    "model": "calibrated-timebin-ringing-v2",
+                    "status": "likely",
+                }
+            },
+            {
+                "artifact_evidence": {
+                    "model": "calibrated-timebin-ringing-v2",
+                    "status": "supporting",
+                }
+            },
+            {
+                "artifact_evidence": {
+                    "model": "calibrated-timebin-ringing-v1",
+                    "status": "likely",
+                }
+            },
+        ]
     )
+
+    assert summary["model"] == "calibrated-timebin-ringing-v2"
+    assert summary["likely"] == 1
+    assert summary["supporting_only"] == 1
+
+
+def test_mass_only_shoulder_hint_is_not_default_filtered():
+    assert not _is_noise_artifact(["possible high-side shoulder of taller m/z 41.067"])
 
 
 def test_timebin_pattern_does_not_override_formula_candidate():

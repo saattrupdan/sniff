@@ -456,9 +456,10 @@ component has no separable Raw trace. The metric counts proposals, not
 unique identities or calibrated confidence, and detector artefacts removed by the
 existing peak-shape safeguards are reported separately. High-prominence ringing that
 survives local peak-shape checks is removed only when its delay in calibrated time-bin
-space recurs behind several taller parent peaks and its extracted trace passes separate
-level and cycle-change co-variation gates. `artifact_diagnostics` reports likely and
-supporting-only counts; formula absence, low m/z, equal mass spacing, or shared sample
+space recurs across independent detector families and its gain, blocked held-out
+prediction, level correlation and cycle-change correlation all pass.
+`artifact_diagnostics` reports version-2 likely and supporting-only counts; formula
+absence, low m/z, equal mass spacing, or shared sample
 timing alone cannot classify an artefact. Once curated sample and background ranges are
 available, a formula-free channel with finite evidence in every interval is separately
 marked background-like when mean sample/background Raw is below 0.9; this does not
@@ -608,6 +609,13 @@ catalogue formulae outside the local enumerator's usual bounds, or that formula
 generation could not run. The accompanying interpretation explains that the channel may
 instead be a reagent or inorganic ion, isotope, fragment, unresolved interference, noise
 peak, or a mass-calibration mismatch.
+
+Detector echoes require more than recurring time-bin spacing. Sniff learns a run-wide
+response from at least three independent parent families, validates its delay and gain
+stability, and predicts each candidate on blocked held-out cycles. The candidate and its
+parent are excluded from their own reference model. Failed amplitude, temporal or delay
+gates remain visible as supporting evidence and never suppress the channel.
+
 Accepting a formula automatically derives its exact natural M+1 and M+2 auxiliary
 channels. New analyses jointly fit connected assigned-parent envelopes in
 transmission-corrected signal space. The non-negative fit reports rank, conditioning,
@@ -619,11 +627,14 @@ abundance scaling is available only when the calibration basis is explicitly `to
 legacy or unknown K conventions are never guessed. The installed package also includes the ionisation, compound-assignment, and
 HCN/humidity reference documents.
 
-New app-generated configs carry `analysis_schema_version: 3`, use `empirical-v1` peak
-fitting and `formula-envelope-v2` isotope handling, and retain the same review and
-Export flow. Version-2 configs keep sequential `formula-v1` correction, while
-unversioned configs resolve to `gaussian-v1` with isotope handling off, preserving their
-historical arithmetic. Model names remain explicit rollback settings under `analyze`.
+New app-generated configs carry `analysis_schema_version: 4`, use
+`joint-temporal-v2` peak fitting and `formula-envelope-v2` isotope handling, and retain
+the same review and Export flow. The overlap model shares one empirical centre/width
+model across the complete run, selects non-negative temporal regularisation by held-out
+spectral-bin prediction, and requires improvement over reduced models. Schema-3 reviews
+retain `empirical-v1`; version-2 configs keep sequential `formula-v1` correction; and
+unversioned configs resolve to `gaussian-v1` with isotope handling off. Model names
+remain explicit rollback settings under `analyze`.
 
 ## Accuracy
 

@@ -441,13 +441,13 @@ def bootstrap_config(
     settings = resolve_analysis_settings({})
     settings.update(
         {
-            "peak_fit": "empirical-v1",
+            "peak_fit": "joint-temporal-v2",
             "isotope_mode": "formula-envelope-v2",
             "isotope_abundance_basis": "unknown",
         }
     )
     config = {
-        "analysis_schema_version": 3,
+        "analysis_schema_version": 4,
         "peaks": peaks,
         "ranges": ranges,
         "analyze": {k: v for k, v in settings.items() if k != "sources"},

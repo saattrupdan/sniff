@@ -88,6 +88,56 @@ class EmpiricalExtractionTest(unittest.TestCase):
         if fallback["status"] == "unresolved":
             self.assertTrue(np.isnan(fallback_traces[masses[3]][0]).all())
 
+    def test_joint_temporal_fit_uses_one_whole_run_design(self):
+        a = 10000.0
+        bins = 105000
+        cycles = 64
+        axis = identity_mass_axis(a=a, b=0.0)
+        masses = [40.0, 60.0, 80.0, 100.0, 100.025]
+        x = np.arange(bins, dtype=np.float64)
+        data = np.full((cycles, bins), 2.0, dtype=np.float32)
+
+        def shape(mass):
+            centre = a * np.sqrt(mass)
+            sigma = ptrms._sigma_tb(mass, a, 2400.0, mass_axis=axis)
+            normalised = (x - centre) / sigma
+            return np.exp(-0.5 * normalised**2)
+
+        for mass in masses[:3]:
+            data += (200.0 * shape(mass))[None, :]
+        cycle = np.arange(cycles, dtype=np.float64)
+        first = 80.0 + 20.0 * np.sin(cycle / 8.0)
+        second = 45.0 + 15.0 * np.cos(cycle / 11.0)
+        data += first[:, None] * shape(masses[3])[None, :]
+        data += second[:, None] * shape(masses[4])[None, :]
+        diagnostics = {}
+        progress = []
+
+        with h5py.File("in-memory", "w", driver="core", backing_store=False) as h5:
+            h5.create_dataset("SPECdata/Intensities", data=data)
+            h5.create_dataset("SPECdata/AverageSpec", data=data.mean(axis=0))
+            traces, _ = ptrms.extract_traces(
+                h5,
+                masses,
+                mass_axis=axis,
+                peak_fit_model="joint-temporal-v2",
+                fit_diagnostics=diagnostics,
+                per_range={"sample_01": (1, 32), "sample_02": (33, 64)},
+                progress=progress.append,
+                block=16,
+            )
+
+        report = diagnostics["clusters"][0]
+        self.assertEqual(report["method"], "joint-temporal-v2")
+        self.assertEqual(report["status"], "reliable")
+        self.assertGreater(report["selected_lambda"], 0.0)
+        self.assertNotIn("ranges", report)
+        self.assertTrue(np.isfinite(traces[masses[3]][0]).all())
+        self.assertTrue(np.isfinite(traces[masses[4]][0]).all())
+        self.assertEqual(progress[-1], 1.0)
+        self.assertEqual(progress, sorted(progress))
+        self.assertTrue(any(0.0 < value < 1.0 for value in progress))
+
 
 def test_gaussian_design_with_duplicate_centres_is_withheld():
     _lo, _hi, projection, _norm = ptrms._cluster_design(
@@ -174,11 +224,14 @@ class IsotopeQuantificationTest(unittest.TestCase):
             ),
         }
 
-        with mock.patch.object(
-            ptrms,
-            "load_transmission",
-            return_value=(np.array([1.0, 200.0]), np.ones(2)),
-        ), mock.patch.object(ptrms, "has_transmission", return_value=True):
+        with (
+            mock.patch.object(
+                ptrms,
+                "load_transmission",
+                return_value=(np.array([1.0, 200.0]), np.ones(2)),
+            ),
+            mock.patch.object(ptrms, "has_transmission", return_value=True),
+        ):
             rows, params = ptrms.quantify(
                 traces,
                 object(),
@@ -201,11 +254,14 @@ class IsotopeQuantificationTest(unittest.TestCase):
 
     def test_non_analyte_channel_keeps_signal_but_withholds_concentration(self):
         traces = {30.0: (np.full(4, 100.0), 30.0)}
-        with mock.patch.object(
-            ptrms,
-            "load_transmission",
-            return_value=(np.array([1.0, 200.0]), np.ones(2)),
-        ), mock.patch.object(ptrms, "has_transmission", return_value=True):
+        with (
+            mock.patch.object(
+                ptrms,
+                "load_transmission",
+                return_value=(np.array([1.0, 200.0]), np.ones(2)),
+            ),
+            mock.patch.object(ptrms, "has_transmission", return_value=True),
+        ):
             rows, params = ptrms.quantify(
                 traces,
                 object(),

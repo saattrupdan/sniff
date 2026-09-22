@@ -1244,18 +1244,22 @@ def _review_round_browser_pass(session: str) -> None:
             session,
             "(() => { const order=orderedPeaks(); "
             f"setTab({json.dumps(active_tab)}); selId=order[0].id; renderPeaks(); "
-            "const source=document.querySelector('#peaksbody li.sel .lbl'); "
-            "const target=document.querySelector('#peaksbody li:not(.sel) .lbl'); "
-            "source.dataset.editSource='true'; target.dataset.focusTest='true'; "
             "return {sourceId:order[0].id, sourceLabel:order[0].label, "
             "targetId:order[1].id, targetLabel:order[1].label}; })()",
         )
         temporary_label = f"Temporary {active_tab} label"
-        _browser(session, "fill", "[data-edit-source]", temporary_label)
-        _browser(session, "click", "[data-focus-test]")
+        source_selector = (
+            f'[data-peak-id="{focus_target["sourceId"]}"] [data-a="label"]'
+        )
+        target_selector = (
+            f'[data-peak-id="{focus_target["targetId"]}"] [data-a="label"]'
+        )
+        _browser(session, "fill", source_selector, temporary_label)
+        _browser(session, "click", target_selector)
         label_focus = _eval(
             session,
-            "(() => { const i=document.querySelector('[data-focus-test]'); "
+            "(() => { const i=document.querySelector("
+            f"'[data-peak-id=\"{focus_target['targetId']}\"] [data-a=\"label\"]'); "
             f"const source=peaks.find(p=>p.id==={focus_target['sourceId']}); "
             "return {exists:!!i, focused:document.activeElement===i, "
             "readonly:i?i.readOnly:null, selectedId:selId, sourceLabel:source.label, "

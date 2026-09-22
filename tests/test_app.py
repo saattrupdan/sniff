@@ -2168,8 +2168,8 @@ def test_new_configs_enable_smart_models_and_adapt_explicit_tables(tmp_path):
     ):
         config = app.bootstrap_config(str(h5), template_peaks=template)
 
-    assert config["analysis_schema_version"] == 3
-    assert config["analyze"]["peak_fit"] == "empirical-v1"
+    assert config["analysis_schema_version"] == 4
+    assert config["analyze"]["peak_fit"] == "joint-temporal-v2"
     assert config["analyze"]["isotope_mode"] == "formula-envelope-v2"
     assert config["peaks"][0]["formula"] == "C3H6O"
     assert [peak["mz"] for peak in config["peaks"]] == [59.004, 73.0]

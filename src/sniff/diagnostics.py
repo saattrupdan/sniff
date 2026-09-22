@@ -156,7 +156,7 @@ def _component_record(
         if member.get("artifact_evidence")
     ]
     if any(item.get("status") == "supporting" for item in artefact_evidence):
-        additional.append("detector_echo_pattern_without_sufficient_correlation")
+        additional.append("detector_echo_pattern_without_full_response_support")
     if measured_mz < 40.0:
         additional.append("low_mass_operational_or_fragment_region")
 
