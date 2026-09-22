@@ -722,9 +722,20 @@ def build_viz_data(
         float(peak["mz"]): raw_traces[float(peaks_cfg[index]["mz"])]
         for index, peak in enumerate(peaks)
     }
+    evidence_diagnostics = {}
+    evidence_traces = ptrms.normalise_evidence_traces(
+        role_traces,
+        {float(peak["mz"]): float(peak["apex"]) for peak in peaks},
+        f,
+        primary=primary,
+        primary_mz=primary_mz,
+        R=R,
+        mass_axis=mass_axis,
+        diagnostics=evidence_diagnostics,
+    )
     fragmentation.apply_fragmentation_evidence(
         peaks,
-        role_traces,
+        evidence_traces,
         ptrms.load_rate_constants(),
         fragmentation_context,
         r_phys=R_phys,
@@ -733,7 +744,7 @@ def build_viz_data(
         peaks,
         catalogue.CompoundCatalogue(),
         fragmentation_context,
-        traces=role_traces,
+        traces=evidence_traces,
         drift=drift,
     )
     from .analyze import (
@@ -742,9 +753,11 @@ def build_viz_data(
         interpret_peak_roles,
     )
 
-    _annotate_timebin_ringing(peaks, role_traces, mass_axis)
-    apply_background_evidence(peaks, role_traces, ranges)
-    interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
+    _annotate_timebin_ringing(peaks, evidence_traces, mass_axis)
+    apply_background_evidence(peaks, evidence_traces, ranges)
+    interpret_peak_roles(
+        peaks, drift=drift, R_phys=R_phys, traces=evidence_traces
+    )
     candidate_coverage = ion_roles.coverage_summary(peaks)
     if assign_identity_defaults:
         _apply_refined_identity_defaults(peaks, peaks_cfg)
@@ -781,6 +794,7 @@ def build_viz_data(
             "mass_offset": mass_axis.offset,
             "mass_axis_calibration": mass_axis.to_dict(),
             "fragmentation_context": fragmentation_context,
+            "relationship_evidence": evidence_diagnostics,
             "identity_mass_drift": drift,
             "fresh_review": bool(assign_identity_defaults),
             "R": R,
@@ -1123,6 +1137,8 @@ def serve(
 #   Corrected(t)= Raw(t) / Transmission(apex)
 #   Conc(t)     = Corrected(t) * K / primary(t) * (k_anchor/k) * humidityFactor(t)
 #   Conc[ug](t) = Conc(t) * (mz - proton) / Vm
+# Reviewed reagent/background/artefact/fragment/isotope/alternative-ion roles keep
+# Raw and Corrected traces but have no analyte concentration.
 # ---------------------------------------------------------------------------
 _TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -1596,10 +1612,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <p class="lead" style="font-size:11.5px">How this tool turns the raw IONICON <code>.h5</code> into the concentrations you review here. Everything instrument-specific is read from the file; you curate the chemistry.</p>
 
   <h3>1 · Mass calibration &amp; drift</h3>
-  <p>The instrument stores two or more calibration references in <code>CALdata/Mapping</code> giving <b>timebin = a·√m + b</b>. Three or more valid, well-conditioned references are fit by least squares and form the authoritative mass axis; Sniff does not translate or scale that axis again. Their reconstructed residuals validate the formula-assignment radius. Measured water-cluster and iodobenzene movement is then a temporal-stability diagnostic only. Exactly two Mapping rows, or fallback <code>CALdata/Spectrum</code> coefficients, retain the legacy two-reference affine correction and require both operational references to be trustworthy. Each isolated peak retains a tight local apex refinement; clustered components stay at calibrated theoretical model centres so they do not jump onto a neighbour.</p>
+  <p>The instrument stores calibration references in <code>CALdata/Mapping</code> giving <b>timebin = a·√m + b</b>. Three or more references are fit by least squares, then validated by leaving each reference out and predicting it from the others. A Mapping that passes stays authoritative. A degraded Mapping receives a bounded affine correction only when exact H₃O⁺·H₂O (37.028405) and iodobenzene molecular-ion (203.942993) references are resolved and persistent; this correction never restores automatic assignment eligibility. Each isolated peak retains a tight local apex refinement; clustered components stay at calibrated model centres so they do not jump onto a neighbour.</p>
 
   <h3>2 · Peak detection &amp; identification</h3>
-  <p>Peaks are local maxima of the average spectrum above a relative-height threshold. For each, candidate <b>molecular formulas</b> are enumerated offline inside a broad 200 ppm proposal radius so an expert still receives useful leads. Three or more independent <code>CALdata/Mapping</code> reference residuals separately validate the run-specific assignment radius: at least 5 ppm and never more than 10 ppm. Only candidates inside that radius can be assigned automatically; wider matches remain visible as explicit reviewer hypotheses. Automatic assignment is withheld when the 95th-percentile calibration residual exceeds 10 ppm; broad proposals remain visible. With fewer than three references, broad proposals remain available but none are assigned automatically. Block-to-block movement of the two internal references is reported separately as temporal stability, not mistaken for mass accuracy. Candidates are ranked by three independent lines of evidence: ppm exact-mass error, the measured-vs-predicted <b>¹³C (M+1) and heteroatom (M+2, e.g. S/Cl) isotope pattern</b>, and plausibility (integer ring+double-bond equivalents, the nitrogen rule, element ratios). Near-isobars are told apart by composition, not "nearest mass". Names and isomer labels come from the bundled PTR Library mapping when the formula is known; formula ranking cannot determine structural isomers.</p>
+  <p>Peaks are local maxima of the average spectrum above a relative-height threshold. Candidate <b>molecular formulas</b> are enumerated offline inside a broad 200 ppm proposal radius. Three or more <code>CALdata/Mapping</code> references validate the run-specific 5–10 ppm assignment radius with leave-one-reference-out prediction. Only candidates inside that radius can be assigned automatically; broad matches remain reviewer hypotheses. Automatic assignment is withheld when the 95th-percentile held-out error exceeds 10 ppm. Candidates are ranked by ppm exact-mass error, measured-vs-predicted isotope evidence and chemical plausibility. A satellite can override a coincidental direct formula only with corrected abundance, exact spacing and primary-normalised cycle co-variation. Names and isomer labels come from offline sources after formula support; formula ranking cannot determine structural isomers.</p>
 
   <h3>3 · Integration (Raw)</h3>
   <p><b>Isolated peaks:</b> Raw is a plain <b>window-sum</b> of the measured intensities across the peak's m/z window — no peak shape assumed, so asymmetric or flat-topped peaks are handled as-is. You set that window by dragging the dashed handles (left and right independently). The default R window setting is recomputed in the preview; the delivered CSV re-extracts it at full precision.</p>
@@ -1609,7 +1625,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <p>Ion transmission varies with m/z; the file's transmission curve gives the factor at each apex. <b>Corrected = Raw / transmission(apex)</b>.</p>
 
   <h3>5 · Concentration</h3>
-  <p>Primary-ion-normalised model: <b>Conc[ppb] = quantitative signal · K / I<sub>primary</sub>(t)</b>. The quantitative signal is Corrected unless a validated isotope spillover or abundance adjustment applies; Raw and Corrected themselves retain their measured and transmission-normalised meanings. I<sub>primary</sub> is the configured reagent-ion signal (m/z 21.022 by default) per cycle and <b>K</b> is one sensitivity constant. K is the only quantity not fixed by the raw file — the default is the file's own acquisition calibration. <b>Conc[µg/m³] = Conc · (m − proton) / V<sub>m</sub></b>.</p>
+  <p>Primary-ion-normalised model: <b>Conc[ppb] = quantitative signal · K / I<sub>primary</sub>(t)</b>. The quantitative signal is Corrected unless a validated isotope adjustment applies. Reviewed reagent, artefact, background, fragment, isotope, inseparable-overlap and alternative-ion roles retain Raw and Corrected traces but have no analyte concentration. I<sub>primary</sub> is the configured reagent-ion signal (m/z 21.022 by default) and <b>K</b> defaults to the file's acquisition calibration. <b>Conc[µg/m³] = Conc · (m − proton) / V<sub>m</sub></b>; its temperature/pressure basis follows the recorded molar-volume provenance.</p>
 
   <h3>6 · Optional corrections</h3>
   <p><b>Natural isotopes:</b> an accepted formula automatically derives exact M+1/M+2 auxiliary channels. Their transmission-corrected ratios support identification, and a lower-mass parent's predictable isotope contribution is removed from an assigned overlapping parent where the evidence is physically valid. The main table still has one row per analyte. Monoisotopic-abundance scaling is applied only when the calibration basis explicitly supports it; unknown legacy calibration conventions are never guessed. <b>Per-compound k (kinetic):</b> measured rate constants may scale compounds relative to the shared anchor. Estimated rates remain on shared K. <b>Humidity:</b> flagged low-proton-affinity compounds may use the configured water-cluster model.</p>
@@ -1624,10 +1640,10 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <ul>
     <li><b>One empirical profile family</b> across the spectrum — version-2 deconvolution learns asymmetry from clean run peaks and permits bounded centre/width changes, but physically coalesced components remain unidentifiable and are withheld.</li>
     <li><b>Single sensitivity K</b> unless per-compound kinetic mode is on; the shared-K assumption is only exact for compounds with similar reaction rate constants.</li>
-    <li><b>Fragmentation evidence, not correction</b> — condition-matched PTR Library product ions and measured temporal co-variation can support and rerank an existing exact-mass formula proposal. They cannot create a candidate, override the run mass gate, or prove an isomer. Every channel is still quantified independently, so fragmenting compounds may read low.</li>
+    <li><b>Fragmentation evidence, not correction</b> — condition-matched PTR Library product ions and primary-normalised temporal co-variation can support and rerank an existing exact-mass formula proposal. They cannot create a candidate, override the run mass gate, prove an isomer or supply an analyte concentration for the fragment channel.</li>
     <li><b>Alternative ions stay proposals</b> — hydration, water loss, charge transfer, hydride abstraction and multiply charged envelopes are shown with their explicit ion notation and evidence. They never become automatic neutral-analyte assignments.</li>
     <li><b>Humidity dependence</b> is an optional, empirical normalisation, not a full ion-chemistry model; leave it off unless you have reason to apply it.</li>
-    <li><b>Mass-axis authority is explicit</b> — three or more valid Mapping references are authoritative. Only two-row Mapping and Spectrum fallback files require both internal water-cluster and iodobenzene references for an affine correction.</li>
+    <li><b>Mass-axis authority is explicit</b> — multi-point Mapping must pass held-out prediction to stay authoritative. Otherwise both persistent exact-mass internal references are required for a bounded affine correction and all formula matches remain proposals.</li>
     <li><b>Identification is a ranking, not proof</b>: candidate percentages are relative score/share, not calibrated identification confidence; unresolved overlaps are flagged and the expert makes the final call.</li>
   </ul>
 
@@ -1910,11 +1926,13 @@ function rawTrace(p){ if(!p.trace) return null; const out=Float64Array.from(p.tr
     for(let i=0;i<out.length;i++) out[i]*=f; } return out; }
 function computeTraces(p){ const raw=rawTrace(p); if(!raw) return null;
   const T=interpT(p.apex), cor=new Float64Array(NCYC), con=new Float64Array(NCYC), ug=new Float64Array(NCYC);
+  const nonQuantitative=new Set(["reagent","artifact","background","fragment","isotope","unresolved-overlap","alternative-ion"]);
+  const roleKind=(p.ion_role||{}).kind||"", canQuantify=!nonQuantitative.has(roleKind);
   const kfac=(cfg.kinetic && p.k && !p.k_estimated)?cfg.kanchor/p.k:1.0;
   const isHum=cfg.humid && (p.flags||[]).includes("humid") && cfg.href>0;
   const haveConc=!!(M.primary_available !== false && PC.primary && cfg.K!=null);
   for(let i=0;i<NCYC;i++){ cor[i]=raw[i]/T;
-    if(haveConc && PC.primary && PC.primary[i]>0){ let hf=1.0;
+    if(haveConc && canQuantify && PC.primary && PC.primary[i]>0){ let hf=1.0;
       if(isHum && PC.humidity && PC.humidity[i]>0) hf=Math.pow(PC.humidity[i]/cfg.href,cfg.hump);
       con[i]=cor[i]*(cfg.K/PC.primary[i])*kfac*hf; ug[i]=con[i]*(p.mz-M.proton)/cfg.Vm;
     } else { con[i]=NaN; ug[i]=NaN; } }
@@ -3206,24 +3224,29 @@ function updateMethods(){
   const interestNames=interests.map(c=>htmlText(c.name)).join(', ');
   const mc=M.mass_axis_calibration||{applied:false,scale:1,offset_da:0,fallback_reason:"not reported"};
   const massAxis=mc.authority==='CALdata/Mapping'
-    ? `authoritative ${Number((mc.mapping_calibration||{}).n_points||0)}-point CALdata/Mapping fit; no second mass-domain correction`
+    ? `authoritative ${Number((mc.mapping_calibration||{}).n_points||0)}-point CALdata/Mapping fit after held-out validation; no second mass-domain correction`
     : mc.applied
-      ? `fallback affine correction applied; scale = ${Number(mc.scale).toFixed(9)}, offset = ${Number(mc.offset_da).toFixed(6)} Da; both internal anchors passed`
+      ? `bounded internal-reference affine correction applied after unavailable or degraded Mapping validation; scale = ${Number(mc.scale).toFixed(9)}, offset = ${Number(mc.offset_da).toFixed(6)} Da`
       : `calibration unavailable; ${htmlText(mc.fallback_reason||"calibration did not pass")}`;
   const ft=mc.formula_assignment_tolerance||{};
   const massTolerance=ft.status==='accepted'
-    ? `${Number(ft.tolerance_ppm).toFixed(1)} ppm from ${Number(ft.q95_abs_ppm).toFixed(1)} ppm 95th-percentile Mapping fit residual`
+    ? `${Number(ft.tolerance_ppm).toFixed(1)} ppm from ${Number(ft.q95_abs_ppm).toFixed(1)} ppm 95th-percentile held-out Mapping prediction error`
     : ft.status==='degraded'
       ? `automatic assignment withheld — ${htmlText(ft.reason||'calibration residuals exceed 10 ppm')}`
-      : '10 ppm review-only fallback; fewer than three independent calibration references';
+      : '10 ppm review-only fallback; held-out calibration evidence is unavailable';
   const fc=M.fragmentation_context||{};
+  const re=M.relationship_evidence||{};
+  const relationshipEvidence=re.status==='available'
+    ? 'transmission-corrected, primary-ion-normalised traces'
+    : `withheld — ${htmlText(re.reason||'primary-ion normalisation is unavailable')}`;
   const fragmentationContext=fc.status==='available'
-    ? `${htmlText(fc.reagent)} at median E/N ${Number(fc.e_n_td).toFixed(1)} Td; PTR Library profiles within ±20 Td were tested against measured level and change co-variation`
+    ? `${htmlText(fc.reagent)} at median E/N ${Number(fc.e_n_td).toFixed(1)} Td; PTR Library profiles within ±20 Td were tested when relationship evidence was available`
     : `unavailable — ${htmlText(fc.reason||'reaction context was not recorded')}`;
   live.innerHTML=staleHtml(stale)+`
     <h3>Effective settings</h3>
     <p><b>Mass axis:</b> ${massAxis}. The HDF5 a,b timebin mapping remains unchanged.</p>
     <p><b>Formula assignment tolerance:</b> ${massTolerance}. Broad proposals are searched to ±200 ppm; the absolute mDa radii scale with each peak's m/z.</p>
+    <p><b>Relationship evidence:</b> ${relationshipEvidence}. Fragment, isotope, detector and background co-variation gates are withheld without this basis.</p>
     <p><b>Fragmentation evidence:</b> ${fragmentationContext}. This secondary evidence can rerank existing proposals but cannot create or mass-validate one, and co-variation is not MS/MS proof.</p>
     <p><b>R integration windows:</b> R = ${cfg.R} (${rSource}); manual peak windows override the default.
     <b>R<sub>phys</sub> physical/deconvolution resolution:</b> ${cfg.Rphys} (${rPhysSource}).</p>

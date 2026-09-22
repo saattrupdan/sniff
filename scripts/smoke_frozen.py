@@ -40,7 +40,7 @@ def make_h5(path: Path) -> Path:
     detection pipeline, which unit tests cover.
     """
     ncyc, nmz = 24, 15000
-    anchor_masses = np.array([37.033, 204.951])
+    anchor_masses = np.array([37.028405, 203.942993])
     a, b = 1000.0, 0.0
     trace = np.ones((ncyc, nmz), dtype=np.float64)
     bins = np.arange(nmz, dtype=np.float64)
@@ -52,8 +52,8 @@ def make_h5(path: Path) -> Path:
     add_peak(21.022, 1e6)  # the reagent-ion isotope
     add_peak(31.0, 5e3)
     add_peak(31.0, 4e4, slice(8, None))  # an analyte that arrives halfway through
-    add_peak(37.033, 2e5)  # persistent water-cluster calibration anchor
-    add_peak(204.951, 2e5)  # persistent iodobenzene calibration anchor
+    add_peak(37.028405, 2e5)  # persistent water-cluster calibration anchor
+    add_peak(203.942993, 2e5)  # persistent iodobenzene calibration anchor
     with h5py.File(path, "w") as h5:
         h5.create_dataset("SPECdata/Intensities", data=trace)
         h5.create_dataset("SPECdata/AverageSpec", data=trace.mean(axis=0))

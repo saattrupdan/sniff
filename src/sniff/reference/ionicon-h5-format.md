@@ -72,19 +72,21 @@ case, invert the fit as:
 m/z = ((timebin − b) / a)²
 ```
 
-A valid Mapping with three or more rows is the authoritative axis. Its least-squares
-`a,b` fit and per-row residuals are retained as provenance, and no later mass-domain
-translation or scaling is applied. The run-average water-cluster and iodobenzene peaks
-may still be measured across cycle blocks, but their movement is a temporal-stability
-diagnostic only and cannot replace or modify the Mapping calibration.
+A valid Mapping with three or more rows supplies the file axis. Its least-squares `a,b`
+fit and per-row residuals are retained as provenance. Formula accuracy is validated
+separately by leaving each reference out, fitting the others and predicting the held-out
+mass. This avoids the circular earlier practice of calling in-fit residuals independent.
+If held-out error is acceptable, Mapping remains authoritative and no mass-domain
+translation or scaling is applied.
 
-If `CALdata/Mapping` is absent or unusable, Sniff falls back to usable per-cycle
-`CALdata/Spectrum` coefficients. Exactly two Mapping rows follow the same fallback
-calibration path. In those cases only, the sanitised run-average spectrum must contain
-the operational water calibrant at 37.033 and protonated iodobenzene at 204.951. Their
-sub-bin centres must be prominent, high-S/N, unambiguous, conservatively positioned and
-persistent in at least five of eight deterministic cycle blocks. The accepted fallback
-mapping is:
+If Mapping fails held-out validation, or if it is absent or unusable, Sniff requires
+two independently observed exact-mass references before applying a bounded affine
+correction: H₃O⁺·H₂O at 37.028405 and the iodobenzene molecular ion at 203.942993.
+The latter is not protonated iodobenzene at 204.951; using that coordinate can select
+the M+1 satellite. Their sub-bin centres must be prominent, high-S/N, unambiguous,
+conservatively positioned and persistent in at least five of eight deterministic cycle
+blocks. The accepted
+fallback mapping is:
 
 ```
 m_corrected = scale·m_file + offset
@@ -92,21 +94,24 @@ m_file = (m_corrected − offset) / scale
 ```
 
 A failed mandatory fallback anchor is reported with its status, reason, prominence/S/N
-and block persistence. Config schema version 2 migrates version-1 coordinates through
-their recorded old inverse transform, preserving the selected physical timebins while
-removing the obsolete second correction. Per-cycle `MassCal_a/b` also exist in
+and block persistence. Config schema version 3 migrates version-1 coordinates through
+the recorded historical 37.033/204.951 transform and version-2 coordinates through
+their cached Mapping or affine axis, preserving selected physical timebins. A cacheless
+version-1 or version-2 config is refused when its historical axis cannot be
+reconstructed safely. Per-cycle `MassCal_a/b` also exist in
 `AddTraces/DataCollection`, but barely differ from the global fit in the examined files.
 
 Formula identification uses two deliberately different ppm limits. A broad 200 ppm
 window generates formula and catalogue proposals for expert investigation. With at
-least three valid Mapping rows, their reconstructed baseline-mass residuals provide an
-independent check on model fit: the 95th-percentile absolute residual plus a 2 ppm
-small-sample margin defines the assignment radius, clamped to 5–10 ppm. Only candidates
-inside that run-specific radius may become automatic defaults. Wider candidates retain
-their signed ppm errors and remain explicit reviewer hypotheses. Fewer than three
-Mapping rows, or residuals above 10 ppm, disable automatic formula assignment without
-hiding the broad proposal list. Block-to-block internal-reference movement remains a
-temporal-stability diagnostic rather than an accuracy estimate.
+least three valid Mapping rows, the 95th-percentile absolute leave-one-reference-out
+prediction residual plus a 2 ppm small-sample margin defines the assignment radius,
+clamped to 5–10 ppm. Only candidates inside that run-specific radius may become
+automatic defaults. Wider candidates retain signed ppm errors and remain explicit
+reviewer hypotheses. Fewer than three Mapping rows, or held-out errors above 10 ppm,
+disable automatic formula assignment without hiding the broad proposal list. The affine
+reference correction does not by itself restore automatic assignment eligibility.
+Block-to-block reference movement remains a stability diagnostic, not an accuracy
+estimate.
 
 Candidate discovery first tests direct `[M+H]⁺` formulas. Separate versioned ion
 hypotheses may then propose hydrated/dehydrated products under measured H₃O⁺ conditions,

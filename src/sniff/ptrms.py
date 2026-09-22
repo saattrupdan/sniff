@@ -27,16 +27,22 @@ _JS_NORMAL_YEAR_10000_START_S = 253402300800.0
 
 K_ANCHOR_DEFAULT = 2.0  # 1e-9 cm3/s: the single k a non-kinetic calibration assumes
 
-# Run-internal reference ions. For authoritative multi-point Mapping files their
-# centres are stability diagnostics only. Older two-point/Spectrum calibrations retain
-# the separate affine correction in the mass domain.
-INTERNAL_MASS_ANCHORS = (
+# Run-internal exact-mass references. A held-out-validated multi-point Mapping needs
+# no second correction. Degraded Mapping and two-point/Spectrum calibrations require
+# both persistent references before a bounded affine correction is accepted.
+WATER_CLUSTER_EXACT_MZ = 37.028405
+IODOBENZENE_MOLECULAR_ION_MZ = 203.942993
+LEGACY_INTERNAL_MASS_ANCHORS = (
     ("water_cluster", 37.033),
     ("iodobenzene", 204.951),
 )
+INTERNAL_MASS_ANCHORS = (
+    ("water_cluster", WATER_CLUSTER_EXACT_MZ),
+    ("iodobenzene", IODOBENZENE_MOLECULAR_ION_MZ),
+)
 INTERNAL_MASS_CORRECTION_MODEL = "m_corrected = scale*m_file + offset"
 MAPPING_AUTHORITY_MODEL = "authoritative-multi-point-mapping-v1"
-MASS_AXIS_ALGORITHM_VERSION = 2
+MASS_AXIS_ALGORITHM_VERSION = 3
 FILE_MASS_CALIBRATION_MODEL = "timebin = a*sqrt(m_file) + b"
 INTERNAL_ANCHOR_SEARCH_DA = 0.20
 INTERNAL_ANCHOR_MIN_PROMINENCE = 8.0
@@ -48,7 +54,7 @@ INTERNAL_ANCHOR_PROXIMITY_DA = 0.025
 INTERNAL_MASS_SCALE_LIMIT = 0.005
 INTERNAL_MASS_OFFSET_LIMIT_DA = 0.25
 
-FORMULA_TOLERANCE_MODEL = "run-calibration-residuals-v1"
+FORMULA_TOLERANCE_MODEL = "run-calibration-held-out-residuals-v2"
 FORMULA_TOLERANCE_FLOOR_PPM = 5.0
 FORMULA_TOLERANCE_MAX_PPM = 10.0
 FORMULA_TOLERANCE_MARGIN_PPM = 2.0
@@ -57,7 +63,7 @@ FORMULA_SCORE_SIGMA_FLOOR_PPM = 2.0
 
 
 MASS_AXIS_CONFIG_DOMAIN = "corrected"
-MASS_AXIS_CONFIG_VERSION = 2
+MASS_AXIS_CONFIG_VERSION = 3
 
 
 class MassCalibrationError(ValueError):
@@ -113,10 +119,11 @@ class MassAxisCalibration:
 def formula_assignment_tolerance(mass_axis, mz):
     """Return the run-validated ppm exact-mass tolerance at one ion m/z.
 
-    A ppm radius naturally expands in mDa with m/z. Three or more independent file
-    calibration references validate a 5-10 ppm run-specific radius. Files without
-    independent residuals retain conservative review candidates at 10 ppm. When a
-    run exceeds 10 ppm, all broad candidates remain reviewer proposals only.
+    A ppm radius naturally expands in mDa with m/z. Three or more file calibration
+    references can validate a 5-10 ppm run-specific radius only through held-out
+    prediction residuals. Files without held-out evidence retain conservative review
+    candidates at 10 ppm. When a run exceeds 10 ppm, all broad candidates remain
+    reviewer proposals only.
     """
     validate_mass_axis(mass_axis)
     ion_mz = float(mz)
@@ -126,7 +133,7 @@ def formula_assignment_tolerance(mass_axis, mz):
     if not isinstance(model, dict) or model.get("model") != FORMULA_TOLERANCE_MODEL:
         model = {
             "model": "legacy-conservative-fallback",
-            "source": "saved calibration lacks independent residual evidence",
+            "source": "saved calibration lacks held-out residual evidence",
             "status": "fallback",
             "tolerance_ppm": FORMULA_TOLERANCE_MAX_PPM,
             "score_sigma_ppm": FORMULA_TOLERANCE_MAX_PPM / 2.5,
@@ -192,7 +199,8 @@ def _derive_reference_stability(anchors, scale, offset):
 
 
 def _derive_formula_tolerance_model(f, a, b):
-    """Validate a 5-10 ppm radius against independent Mapping residuals."""
+    """Validate a 5-10 ppm radius using leave-one-reference-out predictions."""
+    del a, b  # The full fit calibrates masses; held-out fits validate its prediction.
     try:
         mapping = np.asarray(f["CALdata/Mapping"][:], dtype=np.float64)
     except (KeyError, OSError, TypeError, ValueError):
@@ -210,8 +218,18 @@ def _derive_formula_tolerance_model(f, a, b):
         masses = mapping[:, 0]
         timebins = mapping[:, 1]
         if np.all(np.diff(masses) > 0) and np.all(np.diff(timebins) > 0):
-            fitted_masses = ((timebins - b) / a) ** 2
-            residuals = (fitted_masses - masses) / masses * 1e6
+            residuals = []
+            for index, (mass, timebin) in enumerate(zip(masses, timebins)):
+                training = np.delete(mapping, index, axis=0)
+                design = np.column_stack(
+                    [np.sqrt(training[:, 0]), np.ones(training.shape[0])]
+                )
+                held_a, held_b = np.linalg.lstsq(
+                    design, training[:, 1], rcond=None
+                )[0]
+                fitted_mass = ((timebin - held_b) / held_a) ** 2
+                residuals.append((fitted_mass - mass) / mass * 1e6)
+            residuals = np.asarray(residuals, dtype=np.float64)
             if np.isfinite(residuals).all():
                 points = [
                     {"mz": float(mass), "residual_ppm": float(residual)}
@@ -220,9 +238,12 @@ def _derive_formula_tolerance_model(f, a, b):
     if not points:
         return {
             "model": FORMULA_TOLERANCE_MODEL,
-            "source": "no independent multi-point Mapping residuals",
+            "source": "no held-out multi-point Mapping prediction residuals",
             "status": "fallback",
-            "reason": "fewer than three usable independent calibration references",
+            "reason": (
+                "fewer than three usable calibration references for held-out "
+                "validation"
+            ),
             "mass_error_convention": "1e6 * (observed - theoretical) / theoretical",
             "minimum_ppm": FORMULA_TOLERANCE_FLOOR_PPM,
             "maximum_ppm": FORMULA_TOLERANCE_MAX_PPM,
@@ -246,7 +267,7 @@ def _derive_formula_tolerance_model(f, a, b):
     )
     return {
         "model": FORMULA_TOLERANCE_MODEL,
-        "source": "independent CALdata/Mapping fit residuals",
+        "source": "leave-one-reference-out CALdata/Mapping prediction residuals",
         "status": "accepted" if accepted else "degraded",
         "reason": (
             None
@@ -391,7 +412,20 @@ def validate_mass_axis(mass_axis):
             tolerance_residuals = np.asarray(
                 [float(point["residual_ppm"]) for point in tolerance_points]
             )
-            q95_abs = float(np.percentile(np.abs(residuals), 95.0))
+            held_out_residuals = []
+            for index, (mass, timebin) in enumerate(zip(masses, timebins)):
+                training_masses = np.delete(masses, index)
+                training_timebins = np.delete(timebins, index)
+                design = np.column_stack(
+                    [np.sqrt(training_masses), np.ones(training_masses.size)]
+                )
+                held_a, held_b = np.linalg.lstsq(
+                    design, training_timebins, rcond=None
+                )[0]
+                fitted_mass = ((timebin - held_b) / held_a) ** 2
+                held_out_residuals.append((fitted_mass - mass) / mass * 1e6)
+            held_out_residuals = np.asarray(held_out_residuals)
+            q95_abs = float(np.percentile(np.abs(held_out_residuals), 95.0))
             accepted = q95_abs <= FORMULA_TOLERANCE_MAX_PPM
             expected_tolerance = (
                 max(
@@ -439,7 +473,10 @@ def validate_mass_axis(mass_axis):
                 or tolerance.get("automatic_assignment_allowed") is not accepted
                 or not np.allclose(tolerance_masses, masses, rtol=0, atol=1e-9)
                 or not np.allclose(
-                    tolerance_residuals, residuals, rtol=0, atol=1e-9
+                    tolerance_residuals,
+                    held_out_residuals,
+                    rtol=0,
+                    atol=1e-9,
                 )
             ):
                 raise TypeError
@@ -694,9 +731,31 @@ def mass_axis_from_dict(diagnostics):
 
 
 def _historical_axis_for_migration(config, mass_axis):
-    """Reconstruct the version-1 affine axis without applying version-2 rules."""
+    """Reconstruct the saved historical axis before applying current rules."""
+    version = config.get("mass_axis_version")
     diagnostics = config.get("mass_axis_calibration")
     if isinstance(diagnostics, dict):
+        try:
+            file_calibration = diagnostics["file_calibration"]
+            a = float(file_calibration["a"])
+            b = float(file_calibration["b"])
+            scale = float(diagnostics["scale"])
+            offset = float(diagnostics["offset_da"])
+            if (
+                version != 2
+                or diagnostics.get("model") != MAPPING_AUTHORITY_MODEL
+                or diagnostics.get("authority") != "CALdata/Mapping"
+                or diagnostics.get("applied") is not True
+                or file_calibration.get("model") != FILE_MASS_CALIBRATION_MODEL
+                or not np.allclose(
+                    [a, b], [mass_axis.a, mass_axis.b], rtol=0, atol=1e-9
+                )
+                or not np.allclose([scale, offset], [1.0, 0.0], rtol=0, atol=1e-12)
+            ):
+                raise TypeError
+            return MassAxisCalibration(a, b)
+        except (KeyError, OverflowError, TypeError, ValueError):
+            pass
         try:
             file_calibration = diagnostics["file_calibration"]
             scale = float(diagnostics["scale"])
@@ -704,7 +763,9 @@ def _historical_axis_for_migration(config, mass_axis):
             a = float(file_calibration["a"])
             b = float(file_calibration["b"])
             anchors = diagnostics["anchors"]
-            required = {name: float(target) for name, target in INTERNAL_MASS_ANCHORS}
+            required = {
+                name: float(target) for name, target in LEGACY_INTERNAL_MASS_ANCHORS
+            }
             if (
                 diagnostics.get("model") != INTERNAL_MASS_CORRECTION_MODEL
                 or diagnostics.get("applied") is not True
@@ -735,8 +796,16 @@ def _historical_axis_for_migration(config, mass_axis):
         except (KeyError, OverflowError, TypeError, ValueError):
             pass
 
+    if version == 2:
+        raise ValueError(
+            "version-2 corrected config lacks reconstructable historical mass-axis "
+            "evidence"
+        )
+
     anchors = mass_axis.diagnostics.get("anchors")
-    required = {name: float(target) for name, target in INTERNAL_MASS_ANCHORS}
+    required = {
+        name: float(target) for name, target in LEGACY_INTERNAL_MASS_ANCHORS
+    }
     try:
         if (
             not isinstance(anchors, list)
@@ -754,10 +823,10 @@ def _historical_axis_for_migration(config, mass_axis):
             ):
                 raise TypeError
             observed[anchor["name"]] = float(anchor["observed_file_mz"])
-        observed_lo = observed[INTERNAL_MASS_ANCHORS[0][0]]
-        observed_hi = observed[INTERNAL_MASS_ANCHORS[1][0]]
-        target_lo = INTERNAL_MASS_ANCHORS[0][1]
-        target_hi = INTERNAL_MASS_ANCHORS[1][1]
+        observed_lo = observed[LEGACY_INTERNAL_MASS_ANCHORS[0][0]]
+        observed_hi = observed[LEGACY_INTERNAL_MASS_ANCHORS[1][0]]
+        target_lo = LEGACY_INTERNAL_MASS_ANCHORS[0][1]
+        target_hi = LEGACY_INTERNAL_MASS_ANCHORS[1][1]
         scale = (target_hi - target_lo) / (observed_hi - observed_lo)
         offset = target_lo - scale * observed_lo
         if (
@@ -781,7 +850,7 @@ def _historical_axis_for_migration(config, mass_axis):
 
 
 def migrate_config_mass_axis(config, mass_axis):
-    """Migrate an unmarked or version-1 config onto the current mass axis.
+    """Migrate an unmarked or older config onto the current mass axis.
 
     The migration is deliberately limited to the documented config schema. Unknown
     fields are copied unchanged so an agent's provenance and review notes survive.
@@ -802,6 +871,7 @@ def migrate_config_mass_axis(config, mass_axis):
     if domain is not None or version is not None:
         if domain != MASS_AXIS_CONFIG_DOMAIN or version not in {
             1,
+            2,
             MASS_AXIS_CONFIG_VERSION,
         }:
             raise ValueError(
@@ -1172,7 +1242,8 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
         should_stop=should_stop,
     )
     base["anchors"] = anchors
-    if mapping_evidence is not None:
+    formula_tolerance = _derive_formula_tolerance_model(f, a, b)
+    if mapping_evidence is not None and formula_tolerance["status"] == "accepted":
         base.update(
             {
                 "model": MAPPING_AUTHORITY_MODEL,
@@ -1183,7 +1254,7 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
                 "mass_domain_correction_applied": False,
                 "mapping_calibration": mapping_evidence,
                 "reference_stability": _derive_reference_stability(anchors, 1.0, 0.0),
-                "formula_assignment_tolerance": _derive_formula_tolerance_model(f, a, b),
+                "formula_assignment_tolerance": formula_tolerance,
             }
         )
         calibration = MassAxisCalibration(a, b, diagnostics=base)
@@ -1191,6 +1262,16 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
         if progress is not None:
             progress(1.0)
         return calibration
+    if mapping_evidence is not None:
+        base.update(
+            {
+                "authority": (
+                    "internal-affine after degraded CALdata/Mapping validation"
+                ),
+                "mapping_calibration": mapping_evidence,
+                "mapping_validation": formula_tolerance,
+            }
+        )
 
     failures = [
         anchor
@@ -1256,7 +1337,7 @@ def load_mass_axis(f, *, progress=None, should_stop=None):
     base["reference_stability"] = _derive_reference_stability(
         anchors, scale, offset
     )
-    base["formula_assignment_tolerance"] = _derive_formula_tolerance_model(f, a, b)
+    base["formula_assignment_tolerance"] = formula_tolerance
     calibration = MassAxisCalibration(
         a, b, scale=scale, offset=offset, diagnostics=base
     )
@@ -1650,7 +1731,11 @@ def extract_primary(f, primary_mz=21.022, R=1200.0, block=400, mass_axis=None):
 
 
 def water_cluster_ratio(
-    f, cluster_mz=37.033, primary_mz=21.022, R=1200.0, mass_axis=None
+    f,
+    cluster_mz=WATER_CLUSTER_EXACT_MZ,
+    primary_mz=21.022,
+    R=1200.0,
+    mass_axis=None,
 ):
     """Per-cycle humidity proxy X(t) = I(first water cluster) / I(primary isotope).
 
@@ -2826,6 +2911,74 @@ def stats(x):
     }
 
 
+def normalise_evidence_traces(
+    traces,
+    apex_masses,
+    f,
+    *,
+    primary=None,
+    primary_mz=21.022,
+    R=1200.0,
+    mass_axis=None,
+    diagnostics=None,
+):
+    """Return transmission-corrected, primary-normalised traces for relationships.
+
+    Shared primary-ion movement can otherwise create apparent correlation between
+    unrelated channels. The returned values are evidence only: quantification keeps
+    the original extracted traces and its explicit provenance.
+    """
+    if primary is None:
+        primary = extract_primary(
+            f, primary_mz=primary_mz, R=R, mass_axis=mass_axis
+        )
+    primary = (
+        np.asarray(primary, dtype=np.float64)
+        if primary is not None
+        else None
+    )
+    tm, tf = load_transmission(f)
+    trace_lengths = {
+        np.asarray(trace, dtype=np.float64).shape for trace in traces.values()
+    }
+    primary_available = (
+        primary is not None
+        and primary.ndim == 1
+        and trace_lengths == {primary.shape}
+    )
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "model": "transmission-primary-normalised-evidence-v1",
+                "status": "available" if primary_available else "withheld",
+                "signal_basis": (
+                    "transmission-corrected and primary-ion-normalised"
+                    if primary_available
+                    else None
+                ),
+                "reason": (
+                    None
+                    if primary_available
+                    else "primary-ion trace is missing or incompatible"
+                ),
+            }
+        )
+    normalised = {}
+    for mass, trace in traces.items():
+        values = np.asarray(trace, dtype=np.float64)
+        result = np.full_like(values, np.nan)
+        if not primary_available:
+            normalised[mass] = result
+            continue
+        apex = float(apex_masses.get(mass, mass))
+        transmission = float(np.interp(apex, tm, tf))
+        corrected = values / transmission
+        valid = np.isfinite(corrected) & np.isfinite(primary) & (primary > 0)
+        result[valid] = corrected[valid] / primary[valid]
+        normalised[mass] = result
+    return normalised
+
+
 def quantify(
     traces,
     f,
@@ -2844,6 +2997,7 @@ def quantify(
     mass_axis=None,
     isotope_plan=None,
     isotope_abundance_basis="unknown",
+    non_analyte_masses=None,
 ):
     """Turn raw traces into Corrected / Conc / Conc[ug] and per-range statistics.
 
@@ -2851,8 +3005,9 @@ def quantify(
         Conc[ppb] = Corrected * K / I_primary(t) * (k_anchor / k_compound)
     The last factor is the optional per-compound kinetic correction: without it
     (k_map None) every compound shares one effective rate constant and the output
-    reproduces a single-sensitivity reference; with it, each compound is scaled by
-    its own proton-transfer rate constant, which is physically more accurate.
+    reproduces a single-sensitivity reference; with it, each compound receives an
+    approximate rate-constant scaling. It is not a standards calibration and does not
+    account for compound-specific product-ion branching.
 
     K:       None -> derived from the file's own pre-computed concentration; else
              a float (from `calibrate` / a standard).
@@ -2897,6 +3052,7 @@ def quantify(
             hfac = humidity_factor(humidity_ratio, humidity_ref, humidity_p)
             humid_applied = True
 
+    non_analyte_masses = {float(mass) for mass in (non_analyte_masses or [])}
     corrected = {}
     for mass, (raw_trace, apex_mass) in traces.items():
         transmission = float(np.interp(apex_mass, tm, tf))
@@ -2927,7 +3083,8 @@ def quantify(
         # measured value; compounds with an estimated k stay on the shared K.
         if k_map and k_map.get(m, {}).get("k") and not k_map[m].get("k_estimated"):
             kfac = k_anchor / float(k_map[m]["k"])
-        if norm is not None:
+        quantitative = m not in non_analyte_masses
+        if norm is not None and quantitative:
             con = quantitative_signal * norm * kfac
             if hfac is not None and m in humid_masses:
                 con = con * hfac
@@ -2957,6 +3114,7 @@ def quantify(
         "kinetic": k_map is not None,
         "k_anchor": k_anchor,
         "concentration_available": norm is not None,
+        "non_analyte_masses": sorted(non_analyte_masses),
         "transmission_available": has_transmission(f),
         "humidity_corrected": humid_applied,
         "humidity_ref": humidity_ref,

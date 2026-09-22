@@ -2,9 +2,10 @@ from pathlib import Path
 
 import numpy as np
 
-from sniff import formula_id
+from sniff import formula_id, ptrms
 from sniff.analyze import (
     _assign_suggested_identities,
+    _background_report,
     _compact_peak,
     annotate_peaks,
     apply_background_evidence,
@@ -32,7 +33,7 @@ def test_run_consistent_marker_shift_recovers_displaced_reagent_roles():
         (29.997 + 0.013, "NO+"),
         (30.994 + 0.010, "NO+ (15N) isotope"),
         (32.997 + 0.008, "O2+ (17O)"),
-        (37.033 + 0.016, "H3O+·H2O cluster (operational calibration water)"),
+        (ptrms.WATER_CLUSTER_EXACT_MZ + 0.016, "H3O+·H2O cluster"),
     ]
     peaks = [
         {"mz": mass, "height": 100.0, "candidates": []}
@@ -92,7 +93,15 @@ def test_stronger_parent_supports_possible_isotope_interpretation():
         "candidates": [{"formula": "C2H8O3", "iso_pred": [0.02, 0.001]}],
     }
 
-    interpret_peak_roles([parent, child, unrelated])
+    parent_trace = np.tile(np.array([1.0, 2.0, 8.0, 4.0]), 6)
+    interpret_peak_roles(
+        [parent, child, unrelated],
+        traces={
+            parent["mz"]: parent_trace,
+            child["mz"]: parent_trace * 0.1,
+            unrelated["mz"]: np.tile(np.array([3.0, 2.0, 1.0, 2.0]), 6),
+        },
+    )
 
     interpretation = child["interpretation_candidates"][0]
     assert interpretation["kind"] == "isotope"
@@ -120,7 +129,7 @@ def test_isotope_spacing_outside_twelve_mda_is_not_claimed():
     assert child["interpretation_candidates"][0]["kind"] == "unresolved"
 
 
-def test_valid_formula_candidate_is_not_reclassified_as_an_isotope():
+def test_valid_formula_candidate_is_not_reclassified_without_trace_evidence():
     parent = {
         "mz": 45.0335,
         "height": 100.0,
@@ -135,6 +144,30 @@ def test_valid_formula_candidate_is_not_reclassified_as_an_isotope():
     interpret_peak_roles([parent, independent])
 
     assert "interpretation_candidates" not in independent
+
+
+def test_covarying_isotope_overrides_coincidental_direct_formula():
+    parent = {
+        "mz": 70.0,
+        "height": 100.0,
+        "candidates": [{"formula": "C4H5O", "iso_pred": [0.05, 0.002]}],
+    }
+    child = {
+        "mz": 70.0 + formula_id.DM1,
+        "height": 8.0,
+        "candidates": [
+            {"formula": "C3H6N2", "assignment_eligible": True, "delta_ppm": 1.0}
+        ],
+    }
+    trace = np.tile(np.array([1.0, 3.0, 9.0, 2.0]), 6)
+
+    interpret_peak_roles(
+        [parent, child],
+        traces={parent["mz"]: trace, child["mz"]: trace * 0.08},
+    )
+
+    assert child["ion_role"]["kind"] == "isotope"
+    assert child["ion_role"]["exclude_from_analyte_assignment"] is True
 
 
 def test_background_ranges_create_noncompound_role_without_overriding_formula():
@@ -175,6 +208,42 @@ def test_background_ranges_create_noncompound_role_without_overriding_formula():
     assert identified["background_evidence"]["sample_over_background"] == 0.1
     assert authored["ion_role"]["kind"] == "authored"
     assert authored["background_evidence"]["sample_over_background"] == 0.1
+
+
+def test_cli_background_report_uses_review_background_evidence():
+    traces = {
+        55.0: np.array([1.0, 1.0, 1.0, 10.0, 10.0, 10.0]),
+        57.0: np.array([10.0, 10.0, 10.0, 1.0, 1.0, 1.0]),
+    }
+    ranges = {"sample_01": (1, 3), "background_01": (4, 6)}
+    evidence = {
+        "status": "available",
+        "signal_basis": "transmission-corrected and primary-ion-normalised",
+    }
+
+    report = _background_report(traces, ranges, {55.0: "unknown"}, evidence)
+
+    assert report["model"] == "primary-normalised-sample-background-v2"
+    assert report["background_like"] == {
+        "55.000": {
+            "label": "unknown",
+            "S_over_B": 0.1,
+            "bg_trend_last_over_first": None,
+        }
+    }
+    assert "Raw" not in report["metric"]
+
+
+def test_cli_background_report_is_withheld_without_primary_normalisation():
+    report = _background_report(
+        {55.0: np.array([1.0, 2.0])},
+        {"sample_01": (1, 1), "background_01": (2, 2)},
+        {},
+        {"status": "withheld", "reason": "primary unavailable"},
+    )
+
+    assert report["status"] == "withheld"
+    assert report["background_like"] == {}
 
 
 def test_supported_fragment_link_is_an_interpretation_not_an_identity():

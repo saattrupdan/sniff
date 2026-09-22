@@ -78,10 +78,22 @@ sniff viz      FILE.h5 --config cfg.json --html review.html   # portable standal
 sniff analyze  FILE.h5 \                     # no review: curated config -> Viewer-style CSV
     --config cfg.json --include-cycle-rows --out results.csv
 sniff analyze  FILE.h5 --auto-peaks --auto-segments --out results.csv   # zero-curation fallback (auto-labels, drops noise)
+sniff diagnose FILE.h5 --config cfg.json    # read-only component evidence report
 sniff calibrate FILE.h5 viewer.csv          # fit concentration constant K -> pass via --K
 sniff compare   results.csv viewer.csv --per-mass   # accuracy vs a Viewer export
 sniff rates     benzaldehyde                # browse proton-transfer rate constants (k)
 ```
+
+`diagnose` reruns the same calibrated review evidence without opening a browser or
+changing the H5/config. By default it emits each unresolved canonical component, its
+member peaks, nearest out-of-gate formula diagnostic, tested candidate routes, overlap
+and interval-fit limitations, primary-normalised sample/background evidence and the
+additional evidence needed before promotion. `--all-components` includes supported and
+non-compound components. To audit a historical cohort after methodology changes, pass a
+prior review payload with `--baseline-payload OLD-PAYLOAD.json`; Sniff reports every
+formerly unresolved component's current outcome and any newly unresolved components
+without re-endorsing the historical classifications. An out-of-gate nearest formula is
+explicitly not a candidate.
 
 ### App mode — `sniff app`
 
@@ -367,7 +379,7 @@ An analysis config may include an `analyze` object with `R`, `R_phys`, `K`,
 curated values: precedence is **CLI override > `analyze` config > legacy default**. The
 same resolver is used by `analyze`, browser initial state, live-save, and Done. Unknown
 top-level and nested config fields survive browser round trips. New detected and saved
-configs carry `mass_axis_domain: "corrected"` and `mass_axis_version: 2`. App-created
+configs carry `mass_axis_domain: "corrected"` and `mass_axis_version: 3`. App-created
 configs also retain the complete validated `mass_axis_calibration` evidence and an H5
 fingerprint. The app reuses that calibration only while the source file's stable
 identity, size and nanosecond timestamps still match. When an older config is opened,
@@ -376,22 +388,23 @@ the new authoritative axis exactly once; cycle ranges, identities and unknown fi
 unchanged.
 
 Before peak detection or extraction, Sniff validates the file's mass-axis evidence. A
-valid `CALdata/Mapping` with three or more references is authoritative: Sniff fits
-`timebin = a*sqrt(m) + b` across all rows and does not subsequently translate or scale
-the mass axis. Measured water-cluster and iodobenzene movement is then reported only as
-a temporal-stability diagnostic. Exactly two Mapping rows, or a Spectrum-coefficient
-fallback, retain the legacy two-reference affine correction using 37.033 and 204.951;
-both references must then be prominent, unambiguous and persistent. This distinction
-prevents a second correction from damaging an already validated multi-point axis.
+valid `CALdata/Mapping` supplies `timebin = a*sqrt(m) + b`, but formula accuracy is
+validated by leaving each reference out and predicting it from the others. Mapping stays
+authoritative only when those held-out errors pass. If they do not, Sniff applies a
+bounded affine correction only when exact H₃O⁺·H₂O (37.028405) and iodobenzene molecular
+ion (203.942993) references are prominent, unambiguous and persistent. Using protonated
+iodobenzene at 204.951 can select its M+1 satellite and is no longer accepted. An affine
+correction never restores automatic formula assignment when held-out Mapping validation
+is degraded.
 
 Formula matching separates proposals from assignments. Sniff enumerates broad CHNOPS,
 halogen, silicon and iodine formula and catalogue proposals within 200 ppm, covering
 ordinary VOCs, common siloxane backgrounds and iodinated instrument references. This
 matches the library-annotation stage in
 [Mustafina et al. (2025)](https://doi.org/10.3390/diagnostics15212738), and shows their
-exact errors and catalogue names for expert investigation. Three or more independent
-`CALdata/Mapping` references define the authoritative axis and validate a run-specific
-assignment radius from their 95th-percentile absolute fit residual plus a 2 ppm
+exact errors and catalogue names for expert investigation. Three or more
+`CALdata/Mapping` references validate a run-specific assignment radius from their
+95th-percentile absolute leave-one-reference-out prediction residual plus a 2 ppm
 small-sample margin. The result
 is bounded to 5–10 ppm, and its absolute mDa width therefore scales with each peak's m/z.
 Only proposals inside that radius can be assigned automatically; wider matches remain
@@ -400,7 +413,9 @@ visible, explicitly provisional reviewer hypotheses. If the calibration residual
 of manufacturing confidence. Files with fewer than three references retain 200 ppm
 review proposals but Sniff does not assign them automatically. Internal-reference
 movement across cycle blocks is reported separately as temporal stability; it is not
-treated as mass-accuracy evidence. Reagent roles have a separate, role-only safeguard
+treated as mass-accuracy evidence. The claim-by-claim literature ledger is bundled as
+`src/sniff/reference/methodology-audit.md`. Reagent roles have a separate,
+role-only safeguard
 for saturated or displaced centroids: three consistent exact-marker anchors can establish
 a small run marker displacement, after which another known reagent marker must agree
 within 12 mDa and remain within 25 mDa of its tabulated position. This never moves the

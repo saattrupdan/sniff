@@ -8,12 +8,12 @@ def identity_mass_axis(a=10.0, b=1.0):
     anchors = [
         {
             "name": "water_cluster",
-            "target_mz": 37.033,
+            "target_mz": 37.028405,
             "status": "accepted",
             "reason": "",
-            "observed_file_mz": 37.033,
-            "corrected_mz": 37.033,
-            "timebin": a * 37.033**0.5 + b,
+            "observed_file_mz": 37.028405,
+            "corrected_mz": 37.028405,
+            "timebin": a * 37.028405**0.5 + b,
             "prominence": 100.0,
             "snr": 100.0,
             "persistence": {
@@ -22,17 +22,17 @@ def identity_mass_axis(a=10.0, b=1.0):
                 "accepted_blocks": 8,
                 "fraction": 1.0,
                 "statuses": ["accepted"] * 8,
-                "block_centres_file_mz": [37.033] * 8,
+                "block_centres_file_mz": [37.028405] * 8,
             },
         },
         {
             "name": "iodobenzene",
-            "target_mz": 204.951,
+            "target_mz": 203.942993,
             "status": "accepted",
             "reason": "",
-            "observed_file_mz": 204.951,
-            "corrected_mz": 204.951,
-            "timebin": a * 204.951**0.5 + b,
+            "observed_file_mz": 203.942993,
+            "corrected_mz": 203.942993,
+            "timebin": a * 203.942993**0.5 + b,
             "prominence": 100.0,
             "snr": 100.0,
             "persistence": {
@@ -41,7 +41,7 @@ def identity_mass_axis(a=10.0, b=1.0):
                 "accepted_blocks": 8,
                 "fraction": 1.0,
                 "statuses": ["accepted"] * 8,
-                "block_centres_file_mz": [204.951] * 8,
+                "block_centres_file_mz": [203.942993] * 8,
             },
         },
     ]
@@ -73,9 +73,9 @@ def identity_mass_axis(a=10.0, b=1.0):
             "candidate_generation_allowed": True,
             "automatic_assignment_allowed": True,
             "calibration_points": [
-                {"mz": 37.033, "residual_ppm": 0.0},
+                {"mz": 37.028405, "residual_ppm": 0.0},
                 {"mz": 100.0, "residual_ppm": 0.0},
-                {"mz": 204.951, "residual_ppm": 0.0},
+                {"mz": 203.942993, "residual_ppm": 0.0},
             ],
         },
     }

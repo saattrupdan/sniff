@@ -41,8 +41,14 @@ def annotate_ion_candidates(
 
     for index, peak in enumerate(peaks):
         peak.pop("ion_candidates", None)
-        if peak.get("candidates"):
-            continue
+        if context_available and not h3o_mode and (no_mode or o2_mode):
+            for candidate in peak.get("candidates") or []:
+                candidate["assignment_eligible"] = False
+                candidate["reagent_compatible"] = False
+                candidate["assignment_limitation"] = (
+                    "a direct [M+H]+ assignment is incompatible with the validated "
+                    f"active reagent {reagent}"
+                )
         hypotheses = []
         if h3o_mode:
             hypotheses.extend(
@@ -255,11 +261,16 @@ def coverage_summary(peaks):
 
 
 def _peak_category(peak):
+    interpretations = peak.get("interpretation_candidates") or []
+    if any(
+        item.get("kind") == "isotope" and item.get("candidate_formulas")
+        for item in interpretations
+    ):
+        return "inherited_parent_candidate"
     if peak.get("candidates"):
         return "direct_protonated_formula"
     if peak.get("ion_candidates"):
         return "alternative_ion_formula"
-    interpretations = peak.get("interpretation_candidates") or []
     if any(item.get("candidate_formulas") for item in interpretations):
         return "inherited_parent_candidate"
     if any(item.get("kind") == "authored" for item in interpretations):

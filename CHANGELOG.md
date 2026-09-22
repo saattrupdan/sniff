@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `sniff diagnose FILE --config REVIEW.json` now emits a read-only, component-level
+  explanation of unresolved and optionally all canonical components: member peaks,
+  nearest out-of-gate formula diagnostics, route checks, overlap and interval-fit
+  constraints, primary-normalised background behaviour and the evidence needed before
+  promotion. An optional prior review payload produces before/after outcomes for its
+  exact unresolved cohort. A bundled literature audit maps calibration, identification,
+  reaction, isotope, fragmentation, background and quantification claims to their
+  limitations.
 - The bundled offline catalogue now includes a bounded, response-hashed PubChem PUG
   REST snapshot for formula-supported name and structure proposals. PubChem evidence is
   source-separated, locally packaged, never queried at runtime, and cannot create or
@@ -67,21 +75,28 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Fragment, isotope, charge-state, detector-echo and sample/background relationship
+  evidence now uses transmission-corrected, primary-ion-normalised traces, preventing
+  shared reagent-ion movement from manufacturing co-variation. A coincidental direct
+  formula can be reclassified as an isotope only with corrected abundance, exact spacing
+  and supported level/change co-variation.
 - Formula enumeration and natural-isotope evidence now include silicon and iodine,
   covering common siloxane backgrounds and iodinated reference ions without widening
   either mass tolerance. Legacy Gaussian overlap projection now uses a guarded,
   scale-relative regularisation and withholds non-finite components instead of emitting
   overflow-driven traces.
-- Valid three-or-more-point `CALdata/Mapping` fits are now authoritative mass axes.
-  Sniff no longer applies a second water-cluster/iodobenzene translation and scale that
-  could move those references hundreds of ppm after a single-digit-ppm Mapping fit.
-  Version-1 review coordinates migrate through their recorded historical transform so
-  they retain the same physical timebins.
-- Formula discovery now separates broad 200 ppm expert-review proposals from a
-  run-validated 5–10 ppm assignment radius derived from independent Mapping residuals.
-  Wider NIST/catalogue matches remain visible with their ppm errors but are never
-  assigned automatically; poor calibration leaves every result as a proposal rather than
-  widening the scientific acceptance boundary.
+- Multi-point `CALdata/Mapping` formula accuracy is now validated with
+  leave-one-reference-out prediction rather than circular residuals from the same fit.
+  A Mapping that passes stays authoritative. A degraded Mapping receives a bounded
+  affine correction only when exact water-cluster and iodobenzene molecular-ion
+  references are both resolved and persistent; automatic formula assignment remains
+  disabled. Version-1/2 review coordinates migrate through their historical axes so the
+  selected physical timebins survive schema 3.
+- Formula discovery retains the broad 200 ppm expert-review window and a 5–10 ppm
+  assignment radius, but only held-out calibration evidence can enable automatic
+  assignment. Wider NIST/catalogue matches remain visible with signed errors and never
+  become identities. Alternative ion pathways remain visible beside a direct formula,
+  and a non-H₃O⁺ active reagent makes direct `[M+H]⁺` candidates ineligible.
 - Fresh app reviews now fill remaining identity blanks after trace extraction refines
   the measured peak apex. Reagent markers first use the strict 12 mDa window; three
   consistent marker anchors may then recover another known reagent channel with the
@@ -92,6 +107,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - New app-generated configs use analysis schema 3 with `empirical-v1` fitting and joint
   `formula-envelope-v2` isotope handling. Schema-2 configs retain `formula-v1`, and
   legacy configs retain their previous Gaussian and isotope-off arithmetic.
+
+### Fixed
+
+- The calibration fallback used protonated iodobenzene at 204.951 and could select its
+  M+1 satellite. It now uses the documented 203.942993 molecular ion and exact
+  H₃O⁺·H₂O at 37.028405. On the audited `ptr.h5`, this corrects the proposal axis while
+  held-out Mapping error still prevents automatic assignments.
+- Reviewed reagent, detector-artefact, background, fragment, isotope,
+  inseparable-overlap and alternative-ion channels retain Raw/Corrected traces but no
+  longer receive analyte concentrations in CLI or browser calculations. Rate-constant
+  scaling is now described as approximate rather than inherently more accurate.
 
 ## [0.8.0] - 2026-09-12
 

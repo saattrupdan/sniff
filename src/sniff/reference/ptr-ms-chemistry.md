@@ -25,7 +25,7 @@ These are not analytes; they are the chemistry of the source. Skip them as VOCs
 |---|---|---|
 | 19.018 | H₃O⁺ | primary ion (usually off-scale) |
 | 21.022 | H₃¹⁸O⁺ | primary-ion isotope, ×500 → total H₃O⁺ |
-| 37.033 | H₃O⁺·H₂O | operational water calibrant; use its ratio for humidity only after calibration |
+| 37.028405 | H₃O⁺·H₂O | exact ionic mass; older Viewer-compatible configs used the operational 37.033 coordinate |
 | 55.039 | H₃O⁺·(H₂O)₂ | second water cluster |
 | 32 / 30 / 48 | O₂⁺ / NO⁺ / O₂⁺·? | present if in NO⁺/O₂⁺ mode or from impurities |
 
@@ -65,17 +65,18 @@ one and widen inspection of the residual.
 
 ## Per-compound sensitivity: proton-transfer rate constants (k)
 
-Concentration sensitivity scales with each compound's **proton-transfer rate
-constant k** (`Conc ∝ 1/k`). The default (single-K) model assumes one k for every
-compound; the `--kinetic` mode instead scales each compound by its own k, which is
-physically more accurate (a compound with k=4 vs the assumed k=2 is otherwise
-reported at ~2× its true concentration).
+In the first-order, negligible-depletion limit, concentration sensitivity includes each
+compound's **proton-transfer rate constant k** (`Conc ∝ 1/k`). The default (single-K)
+model assumes one effective k; `--kinetic` applies approximate rate-constant scaling.
+This is not automatically more accurate: transmission and the fractions forming parent,
+hydrate and fragment ions also affect sensitivity. Use compound standards for absolute
+quantification, especially for low-mass or fragmenting compounds.
 
 The package ships a rate-constant database as `rate_constants.json` (218 compounds,
 k in 1e-9 cm³/s, from the PTR Library and its cited literature). Query it with
 `sniff rates <name|formula|mz>`. Values carry
-~20–50 % uncertainty and set *relative* sensitivities — they refine, but do not
-replace, calibration with real standards.
+~20–50 % uncertainty. They supply one factor in an approximate *relative* sensitivity;
+they do not replace calibration with real standards or measured product-ion fractions.
 
 Two flags in the table matter:
 
@@ -104,9 +105,9 @@ concentration by `(X / X_ref)^p`:
   bound on the correction.
 - The true p is in between and instrument/E-N specific. **Calibrate it** by
   measuring one standard at ≥2 humidities and fitting p so the reported
-  concentration is humidity-flat. Uncalibrated, the correction only makes
-  *relative* comparisons across differing humidity valid; absolute values still
-  need a standard. For a rigorous HCN treatment see Knighton et al. 2009, which
+  concentration is humidity-flat. With an uncalibrated exponent, corrected values remain
+  indicative and even relative comparisons can retain compound-specific bias. Absolute
+  values need a standard. For a rigorous HCN treatment see Knighton et al. 2009, which
   adds a thermodynamic temperature/pressure term on top of the cluster ratio.
 
 How k is resolved per peak (in `--kinetic` mode), in priority order:

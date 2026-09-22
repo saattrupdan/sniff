@@ -113,6 +113,51 @@ def test_gaussian_design_with_resolved_centres_stays_finite():
     assert np.isfinite(projection).all()
 
 
+def test_evidence_traces_remove_shared_primary_ion_movement():
+    traces = {59.0: np.array([10.0, 20.0, 40.0])}
+    diagnostics = {}
+    with mock.patch.object(
+        ptrms,
+        "load_transmission",
+        return_value=(np.array([1.0, 200.0]), np.ones(2)),
+    ):
+        result = ptrms.normalise_evidence_traces(
+            traces,
+            {59.0: 59.0},
+            object(),
+            primary=np.array([1.0, 2.0, 4.0]),
+            diagnostics=diagnostics,
+        )
+
+    np.testing.assert_allclose(result[59.0], [10.0, 10.0, 10.0])
+    assert diagnostics["status"] == "available"
+
+
+def test_evidence_traces_are_withheld_without_compatible_primary():
+    traces = {59.0: np.array([10.0, 20.0, 40.0])}
+    diagnostics = {}
+    with mock.patch.object(
+        ptrms,
+        "load_transmission",
+        return_value=(np.array([1.0, 200.0]), np.ones(2)),
+    ):
+        result = ptrms.normalise_evidence_traces(
+            traces,
+            {59.0: 59.0},
+            object(),
+            primary=np.array([1.0, 2.0]),
+            diagnostics=diagnostics,
+        )
+
+    assert np.isnan(result[59.0]).all()
+    assert diagnostics == {
+        "model": "transmission-primary-normalised-evidence-v1",
+        "status": "withheld",
+        "signal_basis": None,
+        "reason": "primary-ion trace is missing or incompatible",
+    }
+
+
 class IsotopeQuantificationTest(unittest.TestCase):
     def test_auxiliary_channels_do_not_create_rows(self):
         source = {"mz": 59.0, "formula": "C3H6O"}
@@ -153,6 +198,28 @@ class IsotopeQuantificationTest(unittest.TestCase):
             params["isotopes"]["corrections"][1]["status"],
             "spillover-corrected",
         )
+
+    def test_non_analyte_channel_keeps_signal_but_withholds_concentration(self):
+        traces = {30.0: (np.full(4, 100.0), 30.0)}
+        with mock.patch.object(
+            ptrms,
+            "load_transmission",
+            return_value=(np.array([1.0, 200.0]), np.ones(2)),
+        ), mock.patch.object(ptrms, "has_transmission", return_value=True):
+            rows, params = ptrms.quantify(
+                traces,
+                object(),
+                {"sample_01": (1, 4)},
+                K=1.0,
+                primary=np.ones(4),
+                molar_volume=24.0,
+                non_analyte_masses={30.0},
+            )
+
+        self.assertEqual(rows[0]["raw"]["Average"], 100.0)
+        self.assertEqual(rows[0]["cor"]["Average"], 100.0)
+        self.assertTrue(np.isnan(rows[0]["con"]["Average"]))
+        self.assertEqual(params["non_analyte_masses"], [30.0])
 
 
 if __name__ == "__main__":

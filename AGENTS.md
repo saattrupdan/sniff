@@ -52,14 +52,18 @@ agent-facing contracts; `README.md` and the CLI remain the user documentation.
 - **Concentration communication:** distinguish file-derived scale from a project or
   standards calibration. State when K is uncalibrated and treat humidity-sensitive
   compounds as indicative unless their calibration supports more. Never imply that a
-  plausible number is accurate without evidence.
+  plausible number is accurate without evidence. Reagent, artefact, background,
+  fragment, isotope, inseparable-overlap and alternative-ion roles retain measured
+  signals but do not receive analyte concentrations.
 - **Identification limits:** m/z and formula candidates are proposals, not proof of
   chemical identity. Preserve honest unknowns, report ambiguity and overlap, and do
   not present a library match or candidate score as a calibrated probability.
-- **Mass-axis authority:** a valid `CALdata/Mapping` with three or more references is
-  authoritative. Do not apply a second water-cluster/iodobenzene affine correction;
-  those measured peaks are temporal-stability diagnostics on this path. Two-row Mapping
-  and Spectrum fallback files retain the mandatory two-reference affine correction.
+- **Mass-axis authority:** `CALdata/Mapping` supplies the file axis, but three or more
+  references enable automatic formula assignment only when leave-one-reference-out
+  prediction passes. A degraded Mapping may receive a bounded affine correction only
+  from persistent exact H₃O⁺·H₂O (37.028405) and iodobenzene molecular-ion (203.942993)
+  references; this never restores automatic assignment eligibility. Preserve historical
+  37.033/204.951 coordinates only for version-1 config migration.
 - **Tolerance layers:** preserve the distinction between broad 200 ppm formula/name
   proposals for expert investigation and the run-validated 5–10 ppm assignment radius.
   Wider proposals stay visible but must never become automatic identities.

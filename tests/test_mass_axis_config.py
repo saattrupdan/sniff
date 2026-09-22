@@ -23,12 +23,12 @@ def _observed(corrected):
 def _spectrum(include_water=True, include_iodobenzene=True):
     spectrum = np.full(NBIN, 4.0, dtype=np.float64)
     for mass, height in (
-        (_observed(37.033), 1200.0),
-        (_observed(204.951), 1000.0),
+        (_observed(37.028405), 1200.0),
+        (_observed(203.942993), 1000.0),
     ):
-        if mass == _observed(37.033) and not include_water:
+        if mass == _observed(37.028405) and not include_water:
             continue
-        if mass == _observed(204.951) and not include_iodobenzene:
+        if mass == _observed(203.942993) and not include_iodobenzene:
             continue
         centre = A * np.sqrt(mass) + B
         bins = np.arange(int(centre) - 5, int(centre) + 7, dtype=np.float64)
@@ -64,12 +64,12 @@ def valid_axis(scale=SCALE, offset=OFFSET):
             "anchors": [
                 {
                     "name": "water_cluster",
-                    "target_mz": 37.033,
+                    "target_mz": 37.028405,
                     "status": "accepted",
                     "reason": "",
-                    "observed_file_mz": (37.033 - offset) / scale,
-                    "corrected_mz": 37.033,
-                    "timebin": A * ((37.033 - offset) / scale) ** 0.5 + B,
+                    "observed_file_mz": (37.028405 - offset) / scale,
+                    "corrected_mz": 37.028405,
+                    "timebin": A * ((37.028405 - offset) / scale) ** 0.5 + B,
                     "prominence": 100.0,
                     "snr": 100.0,
                     "persistence": {
@@ -82,12 +82,12 @@ def valid_axis(scale=SCALE, offset=OFFSET):
                 },
                 {
                     "name": "iodobenzene",
-                    "target_mz": 204.951,
+                    "target_mz": 203.942993,
                     "status": "accepted",
                     "reason": "",
-                    "observed_file_mz": (204.951 - offset) / scale,
-                    "corrected_mz": 204.951,
-                    "timebin": A * ((204.951 - offset) / scale) ** 0.5 + B,
+                    "observed_file_mz": (203.942993 - offset) / scale,
+                    "corrected_mz": 203.942993,
+                    "timebin": A * ((203.942993 - offset) / scale) ** 0.5 + B,
                     "prominence": 100.0,
                     "snr": 100.0,
                     "persistence": {
@@ -100,6 +100,29 @@ def valid_axis(scale=SCALE, offset=OFFSET):
                 },
             ],
         },
+    )
+
+
+def legacy_axis(scale=SCALE, offset=OFFSET):
+    diagnostics = valid_axis(scale=scale, offset=offset).to_dict()
+    targets = {"water_cluster": 37.033, "iodobenzene": 204.951}
+    for anchor in diagnostics["anchors"]:
+        target = targets[anchor["name"]]
+        observed = (target - offset) / scale
+        anchor.update(
+            {
+                "target_mz": target,
+                "observed_file_mz": observed,
+                "corrected_mz": target,
+                "timebin": A * observed**0.5 + B,
+            }
+        )
+    return ptrms.MassAxisCalibration(
+        A,
+        B,
+        scale=scale,
+        offset=offset,
+        diagnostics=diagnostics,
     )
 
 
@@ -118,7 +141,7 @@ def valid_axis(scale=SCALE, offset=OFFSET):
         lambda axis: axis.diagnostics["anchors"][1].update(snr=0.0),
         lambda axis: axis.diagnostics["anchors"][0].update(timebin=0.0),
         lambda axis: axis.diagnostics["anchors"][1].update(
-            observed_file_mz=204.951 + ptrms.INTERNAL_ANCHOR_SEARCH_DA + 0.001
+            observed_file_mz=203.942993 + ptrms.INTERNAL_ANCHOR_SEARCH_DA + 0.001
         ),
         lambda axis: axis.diagnostics["anchors"][0].update(target_mz=37.034),
         lambda axis: axis.diagnostics["anchors"].__setitem__(
@@ -147,7 +170,7 @@ def test_mass_axis_validator_rejects_forged_anchor_evidence(mutation):
 
 @pytest.mark.parametrize(
     ("scale", "offset"),
-    [(2.0, OFFSET), (SCALE, -37.033)],
+    [(2.0, OFFSET), (SCALE, -37.028405)],
     ids=["reviewer-scale", "reviewer-offset"],
 )
 def test_mass_axis_validator_rejects_implausible_affine_correction(scale, offset):
@@ -239,7 +262,7 @@ def test_old_config_migrates_absolute_masses_and_widths_once():
     assert changed_again is False
     assert again == migrated
     assert migrated["mass_axis_domain"] == "corrected"
-    assert migrated["mass_axis_version"] == 2
+    assert migrated["mass_axis_version"] == 3
     assert migrated["peaks"][0]["mz"] == pytest.approx(100.05)
     assert migrated["peaks"][0]["window"]["left"] == pytest.approx(0.10007)
     assert migrated["peaks"][0]["window"]["right"] == pytest.approx(0.20014)
@@ -270,12 +293,12 @@ def test_direct_cli_config_migration_persists_the_marker(tmp_path):
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert migrated == saved
     assert saved["mass_axis_domain"] == "corrected"
-    assert saved["mass_axis_version"] == 2
+    assert saved["mass_axis_version"] == 3
     assert saved["peaks"][0]["mz"] == pytest.approx(100.05)
 
 
 def test_version_one_config_preserves_timebins_on_axis_upgrade():
-    old_axis = valid_axis()
+    old_axis = legacy_axis()
     new_axis = valid_axis(scale=1.0, offset=0.0)
     historical = old_axis.to_dict()
     historical["reference_stability"] = {
@@ -292,13 +315,71 @@ def test_version_one_config_preserves_timebins_on_axis_upgrade():
     migrated, changed = ptrms.migrate_config_mass_axis(old, new_axis)
 
     assert changed is True
-    assert migrated["mass_axis_version"] == 2
+    assert migrated["mass_axis_version"] == 3
     assert migrated["peaks"][0]["mz"] == pytest.approx(100.0)
     assert migrated["peaks"][0]["window"] == pytest.approx(0.2 / old_axis.scale)
     assert migrated["mass_axis_calibration"] == new_axis.to_dict()
 
 
-def test_cacheless_version_one_config_reconstructs_historical_axis():
+def test_version_two_affine_config_preserves_timebins_on_axis_upgrade():
+    old_axis = legacy_axis()
+    new_axis = valid_axis(scale=1.0, offset=0.0)
+    old = {
+        "peaks": [{"mz": old_axis.file_to_corrected(100.0), "window": 0.2}],
+        "mass_axis_domain": "corrected",
+        "mass_axis_version": 2,
+        "mass_axis_calibration": old_axis.to_dict(),
+    }
+
+    migrated, changed = ptrms.migrate_config_mass_axis(old, new_axis)
+
+    assert changed is True
+    assert migrated["mass_axis_version"] == 3
+    assert migrated["peaks"][0]["mz"] == pytest.approx(100.0)
+    assert migrated["peaks"][0]["window"] == pytest.approx(0.2 / old_axis.scale)
+
+
+def test_version_two_mapping_config_migrates_from_file_mass_domain():
+    new_axis = valid_axis()
+    mapping_diagnostics = {
+        "model": ptrms.MAPPING_AUTHORITY_MODEL,
+        "authority": "CALdata/Mapping",
+        "applied": True,
+        "scale": 1.0,
+        "offset_da": 0.0,
+        "file_calibration": {
+            "model": ptrms.FILE_MASS_CALIBRATION_MODEL,
+            "a": A,
+            "b": B,
+        },
+    }
+    old = {
+        "peaks": [{"mz": 100.0, "formula": "C2H2O"}],
+        "mass_axis_domain": "corrected",
+        "mass_axis_version": 2,
+        "mass_axis_calibration": mapping_diagnostics,
+    }
+
+    migrated, changed = ptrms.migrate_config_mass_axis(old, new_axis)
+
+    assert changed is True
+    assert migrated["peaks"][0]["mz"] == pytest.approx(
+        new_axis.file_to_corrected(100.0)
+    )
+
+
+def test_cacheless_version_two_config_refuses_ambiguous_axis_upgrade():
+    old = {
+        "peaks": [{"mz": 100.0, "formula": "C2H2O"}],
+        "mass_axis_domain": "corrected",
+        "mass_axis_version": 2,
+    }
+
+    with pytest.raises(ValueError, match="version-2 corrected config lacks"):
+        ptrms.migrate_config_mass_axis(old, valid_axis())
+
+
+def test_cacheless_version_one_config_refuses_ambiguous_anchor_upgrade():
     axis = valid_axis(scale=1.0, offset=0.0)
     old = {
         "peaks": [{"mz": 42.0, "formula": "C2H2O"}],
@@ -306,11 +387,8 @@ def test_cacheless_version_one_config_reconstructs_historical_axis():
         "mass_axis_version": 1,
     }
 
-    migrated, changed = ptrms.migrate_config_mass_axis(old, axis)
-
-    assert changed is True
-    assert migrated["mass_axis_version"] == 2
-    assert migrated["peaks"] == old["peaks"]
+    with pytest.raises(ValueError, match="lacks reconstructable historical"):
+        ptrms.migrate_config_mass_axis(old, axis)
 
 
 def test_identity_migration_only_adds_the_marker():
@@ -321,4 +399,4 @@ def test_identity_migration_only_adds_the_marker():
     assert changed is True
     assert migrated["peaks"] == old["peaks"]
     assert migrated["mass_axis_domain"] == "corrected"
-    assert migrated["mass_axis_version"] == 2
+    assert migrated["mass_axis_version"] == 3

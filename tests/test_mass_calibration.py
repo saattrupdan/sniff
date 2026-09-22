@@ -189,16 +189,18 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
     @classmethod
     def _good_peaks(cls, intermediate=True):
         peaks = [
-            (cls._observed_mass(37.033), 1200.0),
-            (cls._observed_mass(204.951), 1000.0),
+            (cls._observed_mass(37.028405), 1200.0),
+            (cls._observed_mass(203.942993), 1000.0),
         ]
         if intermediate:
             peaks.append((cls._observed_mass(100.123), 800.0))
         return peaks
 
     def test_multi_point_mapping_is_authoritative_without_affine_shift(self):
+        masses = np.array([21.0221, 203.9430, 330.8480], dtype=np.float64)
+        mapping = np.column_stack((masses, self.A * np.sqrt(masses) + self.B))
         with self._file(peaks=[]) as h5:
-            h5.create_dataset("CALdata/Mapping", data=DATA_10_26_33_MAPPING)
+            h5.create_dataset("CALdata/Mapping", data=mapping)
             axis = ptrms.load_mass_axis(h5)
 
         self.assertEqual(axis.scale, 1.0)
@@ -210,6 +212,25 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
         self.assertLessEqual(
             max(abs(point["residual_ppm"]) for point in points), 10.0
         )
+
+    def test_degraded_mapping_uses_stable_exact_mass_internal_references(self):
+        masses = np.array([21.0221, 203.9430, 330.8480], dtype=np.float64)
+        shifted = masses * (1.0 + np.array([0.0, 20.0, 0.0]) * 1e-6)
+        mapping = np.column_stack(
+            (masses, self.A * np.sqrt(shifted) + self.B)
+        )
+        with self._file(peaks=self._good_peaks()) as h5:
+            h5.create_dataset("CALdata/Mapping", data=mapping)
+            axis = ptrms.load_mass_axis(h5)
+
+        self.assertEqual(
+            axis.diagnostics["model"], ptrms.INTERNAL_MASS_CORRECTION_MODEL
+        )
+        self.assertIn("degraded CALdata/Mapping", axis.diagnostics["authority"])
+        self.assertEqual(axis.diagnostics["mapping_validation"]["status"], "degraded")
+        self.assertTrue(axis.diagnostics["mass_domain_correction_applied"])
+        self.assertAlmostEqual(axis.scale, self.SCALE, places=4)
+        self.assertAlmostEqual(axis.offset, self.OFFSET, places=3)
 
     def test_two_anchors_apply_shift_and_scale_to_the_whole_axis(self):
         with self._file(peaks=self._good_peaks()) as h5:
@@ -261,7 +282,7 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
 
     def test_resolved_competing_anchor_is_ambiguous(self):
         peaks = self._good_peaks(intermediate=False)
-        water = self._observed_mass(37.033)
+        water = self._observed_mass(37.028405)
         peaks.extend([(water - 0.08, 900.0), (water + 0.08, 850.0)])
         # Remove the central water peak so two separate candidates compete.
         peaks = peaks[1:]
@@ -331,7 +352,7 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
             self.assertTrue(anchor["persistence"]["available"])
 
     def test_nonfinite_anchor_window_is_rejected_with_anchor_diagnostic(self):
-        water = int(self.A * np.sqrt(self._observed_mass(37.033)))
+        water = int(self.A * np.sqrt(self._observed_mass(37.028405)))
         with self._file(peaks=self._good_peaks()) as h5:
             h5["SPECdata/Intensities"][:, water - 30 : water + 31] = np.nan
             with self.assertRaises(ptrms.MassCalibrationError) as caught:
@@ -345,7 +366,7 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
         self.assertFalse(diagnostics["anchors"][0]["persistence"]["available"])
 
     def test_unusable_anchor_window_is_rejected_with_anchor_diagnostic(self):
-        water = int(self.A * np.sqrt(self._observed_mass(37.033)))
+        water = int(self.A * np.sqrt(self._observed_mass(37.028405)))
         with self._file(peaks=self._good_peaks()) as h5:
             h5["SPECdata/Intensities"][:, water - 30 : water + 31] = 0.0
             with self.assertRaises(ptrms.MassCalibrationError) as caught:
@@ -376,7 +397,7 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
                         call()
 
     def test_one_anchor_never_enables_partial_correction(self):
-        water = (self._observed_mass(37.033), 1200.0)
+        water = (self._observed_mass(37.028405), 1200.0)
         with self._file(peaks=[water]) as h5:
             with self.assertRaises(ptrms.MassCalibrationError) as caught:
                 ptrms.load_mass_axis(h5)
@@ -450,8 +471,8 @@ class InternalMassAxisCalibrationTest(unittest.TestCase):
 
     def test_implausible_affine_solution_is_rejected(self):
         peaks = [
-            (37.033 + 0.175, 1200.0),
-            (204.951 - 0.175, 1000.0),
+            (37.028405 + 0.175, 1200.0),
+            (203.942993 - 0.175, 1000.0),
         ]
         with self._file(peaks=peaks) as h5:
             with self.assertRaises(ptrms.MassCalibrationError) as caught:

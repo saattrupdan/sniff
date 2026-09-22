@@ -99,7 +99,7 @@ def test_high_mass_search_uses_catalogue_instead_of_unbounded_enumeration(monkey
     ) == []
 
 
-def test_mapping_residuals_set_run_tolerance_and_degrade_above_limit():
+def test_held_out_mapping_residuals_set_tolerance_and_degrade_above_limit():
     masses = np.array([21.0221, 203.9430, 330.8480], dtype=np.float64)
     a, b = 10000.0, -200.0
 
@@ -110,8 +110,8 @@ def test_mapping_residuals_set_run_tolerance_and_degrade_above_limit():
             h5.create_dataset("CALdata/Mapping", data=mapping)
             return ptrms._derive_formula_tolerance_model(h5, a, b)
 
-    accepted = model([-3.0, 4.0, -2.0])
-    degraded = model([-3.0, 20.0, -2.0])
+    accepted = model([0.0, 0.0, 0.0])
+    degraded = model([0.0, 20.0, 0.0])
 
     assert accepted["status"] == "accepted"
     assert 5.0 <= accepted["tolerance_ppm"] <= 10.0

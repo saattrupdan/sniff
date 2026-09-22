@@ -46,6 +46,40 @@ def test_dehydrated_ion_gets_separate_named_candidate():
     assert candidate["catalogue"][0]["name"] == "ethanol"
 
 
+def test_alternative_ions_remain_visible_beside_direct_formula():
+    neutral_mass = formula_id.formula_mass({"C": 2, "H": 6, "O": 1})
+    observed = neutral_mass + formula_id.PROTON - ion_roles.WATER_MASS
+    item = peak(observed)
+    item["candidates"] = [
+        {"formula": "CH4", "assignment_eligible": True, "delta_ppm": 0.0}
+    ]
+
+    ion_roles.annotate_ion_candidates(
+        [item], Catalogue(), {"reagent": "H3O+", "status": "available"}
+    )
+
+    assert item["candidates"][0]["assignment_eligible"] is True
+    assert item["ion_candidates"][0]["formula"] == "C2H6O"
+    assert item["ion_candidates"][0]["assignment_eligible"] is False
+
+
+def test_non_hydronium_reagent_withholds_direct_protonated_assignment():
+    neutral_mass = formula_id.formula_mass({"C": 2, "H": 6, "O": 1})
+    observed = neutral_mass - ion_roles.ELECTRON_MASS
+    item = peak(observed)
+    item["candidates"] = [
+        {"formula": "C2H5N", "assignment_eligible": True, "delta_ppm": 0.0}
+    ]
+
+    ion_roles.annotate_ion_candidates(
+        [item], Catalogue(), {"reagent": "O2+", "status": "available"}
+    )
+
+    assert item["candidates"][0]["assignment_eligible"] is False
+    assert item["candidates"][0]["reagent_compatible"] is False
+    assert item["ion_candidates"][0]["ion_notation"] == "M+"
+
+
 def test_hydrated_search_uses_observed_ion_ppm_window():
     neutral_mass = formula_id.formula_mass({"C": 2, "H": 6, "O": 1})
     theoretical = neutral_mass + formula_id.PROTON + ion_roles.WATER_MASS

@@ -12,6 +12,7 @@ Commands (all discovery output is JSON on stdout):
              top_candidate, [likely_artifact]} (compact; --full for all candidates).
   segments   Time-segment detection -> stable plateaus (samples vs background).
   analyze    Full pipeline (from a config) -> PTR-MS-Viewer-style results CSV.
+  diagnose   Read-only component reasons for an existing curated config.
   viz        Review app for an existing peak list + ranges (live-save to a config
              with --serve, or a standalone HTML with --html). Does NOT detect.
   calibrate  Fit the concentration constant K to a reference Viewer CSV.
@@ -204,6 +205,24 @@ def _peak_windows(peaks):
     return {float(p["mz"]): _winlr(p) for p in peaks if p.get("window")}
 
 
+def _non_analyte_masses(peaks):
+    """Return channels whose reviewed role has no valid analyte quantification."""
+    non_quantitative_roles = {
+        "reagent",
+        "artifact",
+        "background",
+        "fragment",
+        "isotope",
+        "unresolved-overlap",
+        "alternative-ion",
+    }
+    return {
+        float(peak["mz"])
+        for peak in peaks
+        if (peak.get("ion_role") or {}).get("kind") in non_quantitative_roles
+    }
+
+
 def _emit(obj, raw=True):
     json.dump(obj, sys.stdout, indent=None if raw else 2)
     sys.stdout.write("\n")
@@ -291,7 +310,13 @@ def detect_peaks(
 
 # reagent (primary) ions: at least one dominates every real PTR spectrum —
 # H3O+ isotope at m/z 21 (H3O+ mode), or NO+/O2+ in switched-reagent modes.
-_PRIMARY_MZ = (21.022, 30.994, 31.989, 33.994, 37.033)
+_PRIMARY_MZ = (
+    21.022,
+    30.994,
+    31.989,
+    33.994,
+    ptrms.WATER_CLUSTER_EXACT_MZ,
+)
 
 
 def assess_signal(f, avg=None, a=None, b=None, mass_axis=None):
@@ -405,7 +430,7 @@ def _attr(f, key):
 _REAGENT_MZ = {
     19.018: "H3O+ primary",
     21.022: "H3O+ (18O) isotope",
-    37.033: "H3O+·H2O cluster (operational calibration water)",
+    ptrms.WATER_CLUSTER_EXACT_MZ: "H3O+·H2O cluster",
     55.039: "H3O+·(H2O)2 cluster",
     73.049: "H3O+·(H2O)3 cluster",
     31.989: "O2+",
@@ -908,6 +933,18 @@ def apply_run_fragmentation_evidence(
         should_stop=should_stop,
     )
     trace_map = {mass: traces[mass][0] for mass in masses}
+    evidence_diagnostics = {}
+    evidence_traces = ptrms.normalise_evidence_traces(
+        trace_map,
+        {mass: traces[mass][1] for mass in masses},
+        f,
+        primary_mz=21.022,
+        R=R,
+        mass_axis=mass_axis,
+        diagnostics=evidence_diagnostics,
+    )
+    context = dict(context)
+    context["relationship_evidence"] = evidence_diagnostics
     for peak in peaks:
         trace = np.asarray(trace_map[float(peak["mz"])], dtype=np.float64)
         finite = trace[np.isfinite(trace)]
@@ -918,7 +955,7 @@ def apply_run_fragmentation_evidence(
         peak["role_trace_status"] = "available" if finite.size else "unresolved"
     fragmentation.apply_fragmentation_evidence(
         peaks,
-        trace_map,
+        evidence_traces,
         ptrms.load_rate_constants(),
         context,
         r_phys=R_phys,
@@ -927,11 +964,13 @@ def apply_run_fragmentation_evidence(
         peaks,
         catalogue.CompoundCatalogue(),
         context,
-        traces=trace_map,
+        traces=evidence_traces,
         drift=drift,
     )
-    _annotate_timebin_ringing(peaks, trace_map, mass_axis)
-    interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
+    _annotate_timebin_ringing(peaks, evidence_traces, mass_axis)
+    interpret_peak_roles(
+        peaks, drift=drift, R_phys=R_phys, traces=evidence_traces
+    )
     return context
 
 
@@ -971,36 +1010,101 @@ def apply_background_evidence(peaks, traces, ranges):
             if len(background_values) >= 2 and background_values[0] > 0
             else None
         )
-        if ratio < 0.9:
-            peak["background_evidence"] = {
-                "model": "sample-background-v1",
-                "status": "background-like",
-                "sample_over_background": round(ratio, 3),
-                "background_last_over_first": (
-                    round(trend, 3) if trend is not None else None
-                ),
-                "sample_ranges": len(sample_values),
-                "background_ranges": len(background_values),
-                "limitation": (
-                    "sample/background behaviour supports a non-analyte interpretation "
-                    "but does not identify the ion or prove detector contamination"
-                ),
-            }
+        status = (
+            "background-like"
+            if ratio < 0.9
+            else "sample-enriched"
+            if ratio > 1.1
+            else "comparable"
+        )
+        peak["background_evidence"] = {
+            "model": "primary-normalised-sample-background-v2",
+            "status": status,
+            "sample_over_background": round(ratio, 3),
+            "background_last_over_first": (
+                round(trend, 3) if trend is not None else None
+            ),
+            "sample_ranges": len(sample_values),
+            "background_ranges": len(background_values),
+            "signal_basis": "transmission-corrected and primary-ion-normalised",
+            "limitation": (
+                "sample/background behaviour supports a non-analyte interpretation "
+                "only below the conservative 0.9 ratio; it does not identify the ion "
+                "or prove detector contamination"
+            ),
+        }
     return peaks
 
 
-def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
+def _background_report(traces, ranges, labels, evidence_diagnostics):
+    """Summarise the same normalised background evidence used by review roles."""
+    sample_labels = [label for label in ranges if label.startswith("sample")]
+    background_labels = [label for label in ranges if label.startswith("background")]
+    if not sample_labels or not background_labels:
+        return None
+    if evidence_diagnostics.get("status") != "available":
+        return {
+            "model": "primary-normalised-sample-background-v2",
+            "status": "withheld",
+            "reason": evidence_diagnostics.get("reason"),
+            "background_like": {},
+        }
+    review_ranges = [
+        {
+            "label": label,
+            "start": bounds[0],
+            "end": bounds[1],
+            "class": "background" if label.startswith("background") else "sample",
+        }
+        for label, bounds in ranges.items()
+        if label in sample_labels or label in background_labels
+    ]
+    peaks = [{"mz": mass, "label": labels.get(mass, "")} for mass in traces]
+    apply_background_evidence(peaks, traces, review_ranges)
+    flagged = {
+        f"{float(peak['mz']):.3f}": {
+            "label": peak["label"],
+            "S_over_B": evidence["sample_over_background"],
+            "bg_trend_last_over_first": evidence["background_last_over_first"],
+        }
+        for peak in peaks
+        if (evidence := peak.get("background_evidence"))
+        and evidence["status"] == "background-like"
+    }
+    report = {
+        "model": "primary-normalised-sample-background-v2",
+        "status": "available",
+        "metric": (
+            "mean transmission-corrected, primary-ion-normalised signal over "
+            "sample_* vs background_* ranges (S/B); channels with S/B < 0.9 "
+            "are flagged below; bg_trend = last/first background range"
+        ),
+        "n_samples": len(sample_labels),
+        "n_backgrounds": len(background_labels),
+        "background_like": flagged,
+    }
+    if flagged:
+        report["warning"] = (
+            f"{len(flagged)} channel(s) are stronger in backgrounds than samples. "
+            "Treat these as background/contamination unless an expert assigns them."
+        )
+    return report
+
+
+def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
     """Attach evidence-backed non-analyte or unresolved interpretations.
 
     Formula candidates describe protonated neutral analytes. This separate list covers
     peaks for which assigning a neutral compound would be misleading: known reagent
     ions, detector artefacts, likely isotope channels, authored identities outside the
     current candidate window, and unresolved real ions. A possible isotope requires a
-    stronger measured parent at the expected spacing; charge states and fragments are
-    intentionally not inferred from mass alone.
+    stronger measured parent at the expected spacing, a compatible corrected abundance
+    and primary-normalised cycle co-variation; charge states and fragments are likewise
+    not inferred from mass alone.
     """
     if not peaks:
         return peaks
+    traces = traces or {}
 
     def measured_mz(peak):
         return float(peak.get("apex", peak["mz"])) / float(drift)
@@ -1072,7 +1176,8 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
             not interpretations
             and not validated_candidates
             and not authored_formula
-            and peak.get("background_evidence")
+            and (peak.get("background_evidence") or {}).get("status")
+            == "background-like"
         ):
             background = peak["background_evidence"]
             trend = background.get("background_last_over_first")
@@ -1142,7 +1247,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                 }
             )
 
-        if not interpretations and not validated_candidates:
+        if not interpretations and traces:
             isotope_options = []
             for order, spacing in ((1, formula_id.DM1), (2, formula_id.DM2)):
                 for parent_index, parent_mass in enumerate(masses):
@@ -1166,7 +1271,29 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                         predicted = float(predicted_values[order - 1])
                     except (KeyError, ValueError):
                         predicted = 0.0
-                    ratio = heights[index] / heights[parent_index]
+                    parent_trace = traces.get(float(peaks[parent_index]["mz"]))
+                    child_trace = traces.get(float(peak["mz"]))
+                    if parent_trace is None or child_trace is None:
+                        continue
+                    correlation = fragmentation._correlation(parent_trace, child_trace)
+                    if (
+                        correlation is None
+                        or correlation["level_correlation"] < 0.70
+                        or correlation["change_correlation"] < 0.60
+                    ):
+                        continue
+                    parent_values = np.asarray(parent_trace, dtype=np.float64)
+                    child_values = np.asarray(child_trace, dtype=np.float64)
+                    valid = (
+                        np.isfinite(parent_values)
+                        & np.isfinite(child_values)
+                        & (parent_values > 0)
+                    )
+                    if not valid.any():
+                        continue
+                    ratio = float(
+                        np.mean(child_values[valid]) / np.mean(parent_values[valid])
+                    )
                     compatible = predicted > 0 and ratio <= max(
                         predicted * 3.0, predicted + 0.02
                     )
@@ -1181,6 +1308,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                                 residual,
                                 ratio,
                                 predicted,
+                                correlation,
                             )
                         )
             if isotope_options:
@@ -1193,7 +1321,8 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     residual,
                     ratio,
                     predicted,
-                ) = min(isotope_options)
+                    correlation,
+                ) = min(isotope_options, key=lambda item: item[:2])
                 parent_candidates = ion_roles.candidate_summaries(
                     peaks[parent_index]
                 )
@@ -1217,6 +1346,9 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                         "evidence": [
                             f"spacing residual {residual * 1000:+.1f} mDa",
                             f"observed ratio {ratio:.3g}; predicted {predicted:.3g}",
+                            "primary-normalised level/change correlations "
+                            f"{correlation['level_correlation']:.2f}/"
+                            f"{correlation['change_correlation']:.2f}",
                         ],
                         "exclude_from_analyte_assignment": True,
                     }
@@ -1244,6 +1376,13 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
         if (
             not interpretations
             and not validated_candidates
+            and (
+                not peak.get("candidates")
+                or all(
+                    candidate.get("reagent_compatible") is False
+                    for candidate in peak["candidates"]
+                )
+            )
             and peak.get("ion_candidates")
         ):
             candidate = peak["ion_candidates"][0]
@@ -2005,6 +2144,7 @@ def auto_peaks(
     _assign_suggested_identities(
         peaks, assign_all_library=assign_all_library
     )
+    interpret_peak_roles(peaks)
     out = []
     for p in peaks:
         sl = p.get("suggested_label", "") or ""
@@ -2013,6 +2153,8 @@ def auto_peaks(
         o = {"mz": p["mz"], "label": "" if sl.startswith("unknown m/z") else sl}
         if p.get("suggested_formula"):
             o["formula"] = p["suggested_formula"]
+        if p.get("ion_role"):
+            o["ion_role"] = p["ion_role"]
         out.append(o)
     return out
 
@@ -2213,6 +2355,7 @@ def cmd_analyze(args):
         humid_masses = {
             m for m, info in resolved.items() if "humid" in info.get("flags", [])
         }
+        non_analyte_masses = _non_analyte_masses(peaks)
 
         # humidity proxy (per-cycle water-cluster ratio) — always computed if any
         # humid compound is present, so it can be reported as a diagnostic
@@ -2272,9 +2415,26 @@ def cmd_analyze(args):
             mass_axis=mass_axis,
             isotope_plan=isotope_plan,
             isotope_abundance_basis=settings["isotope_abundance_basis"],
+            non_analyte_masses=non_analyte_masses,
         )
         params["peak_fit"] = fit_diagnostics
         apexes = {m: traces[m][1] for m in masses}
+        evidence_diagnostics = {}
+        evidence_traces = ptrms.normalise_evidence_traces(
+            {mass: traces[mass][0] for mass in masses},
+            apexes,
+            f,
+            primary_mz=primary_mz,
+            R=R,
+            mass_axis=mass_axis,
+            diagnostics=evidence_diagnostics,
+        )
+        background_report = _background_report(
+            evidence_traces,
+            ranges,
+            labels,
+            evidence_diagnostics,
+        )
         humidity_ref = settings["humidity_ref"]
         if humidity_ref is None and hum_ratio is not None:
             good = np.isfinite(hum_ratio) & (hum_ratio > 0)
@@ -2294,6 +2454,7 @@ def cmd_analyze(args):
                 "molar_volume_source": sources["molar_volume"],
                 "sources": sources,
                 "mass_axis_calibration": mass_axis.to_dict(),
+                "relationship_evidence": evidence_diagnostics,
             }
         )
 
@@ -2400,56 +2561,6 @@ def cmd_analyze(args):
                 f"model for: {humid}"
             )
 
-    # sample-vs-background diagnostic: flag channels that behave like instrument
-    # background / contamination rather than analytes — higher in backgrounds than
-    # samples (S/B < 1) and/or drifting monotonically across the run. Lets the
-    # agent relabel/drop them (e.g. an `unknown m/z 331` that is really background)
-    # instead of shipping a bare "unknown" channel. Needs sample_/background_ labels.
-    background_report = None
-    samp_labels = [l for l in ranges if l.startswith("sample")]
-    bg_labels = [l for l in ranges if l.startswith("background")]
-    if samp_labels and bg_labels:
-        by_mass = {}
-        for r in rows:
-            by_mass.setdefault(r["mass"], {})[r["range"]] = r["raw"]["Average"]
-        flagged = {}
-        for m in masses:
-            per = by_mass.get(m, {})
-            s = [per[l] for l in samp_labels if l in per]
-            bg = [per[l] for l in bg_labels if l in per]
-            if not s or not bg:
-                continue
-            smean, bmean = sum(s) / len(s), sum(bg) / len(bg)
-            sb = (smean / bmean) if bmean else float("inf")
-            bg_series = [per[l] for l in sorted(bg_labels) if l in per]
-            trend = (
-                (bg_series[-1] / bg_series[0])
-                if len(bg_series) >= 2 and bg_series[0]
-                else None
-            )
-            if sb < 0.9:  # not elevated in samples -> background-like
-                flagged[f"{m:.3f}"] = {
-                    "label": labels.get(m, ""),
-                    "S_over_B": round(sb, 2),
-                    "bg_trend_last_over_first": round(trend, 2) if trend else None,
-                }
-        background_report = {
-            "metric": "mean Raw over sample_* vs background_* ranges (S/B); "
-            "channels with S/B < 0.9 are flagged below; "
-            "bg_trend = last/first background range (>1 = rising across run)",
-            "n_samples": len(samp_labels),
-            "n_backgrounds": len(bg_labels),
-            "background_like": flagged,
-        }
-        if flagged:
-            background_report["warning"] = (
-                f"{len(flagged)} channel(s) are higher in backgrounds than samples "
-                "(S/B < 0.9) — likely instrument background/contamination, not breath "
-                "analytes (real VOCs have S/B >> 1). Relabel these as 'background m/z ...' "
-                "or drop them from an analyte panel. Scrutinise unidentified/high-m/z "
-                "peaks first; reagent/cluster diagnostic ions flagging here is expected."
-            )
-
     n_cycle_rows = len(ranges) if args.include_cycle_rows else 0
     _emit(
         {
@@ -2469,6 +2580,56 @@ def cmd_analyze(args):
         },
         args.raw,
     )
+
+
+def cmd_diagnose(args):
+    """Emit component-level evidence without opening or changing a review."""
+    from . import diagnostics, viz
+
+    config = _load_config(args)
+    if not config.get("peaks") or not config.get("ranges"):
+        sys.exit("diagnose needs --config with existing 'peaks' and 'ranges'")
+    with h5py.File(args.h5, "r") as f:
+        mass_axis = ptrms.load_mass_axis(f)
+        config, _ = ptrms.migrate_config_mass_axis(config, mass_axis)
+        settings = resolve_analysis_settings(config, args)
+        data = viz.build_viz_data(
+            f,
+            config["peaks"],
+            config["ranges"],
+            R=settings["R"],
+            R_phys=settings["R_phys"],
+            primary_mz=settings["primary_mz"],
+            K=settings["K"],
+            molar_volume=settings["molar_volume"],
+            analysis_settings=settings,
+            config_base=config,
+            mass_axis=mass_axis,
+        )
+    report = diagnostics.component_report(
+        data["peaks"], include_resolved=args.all_components
+    )
+    if args.baseline_payload:
+        with open(args.baseline_payload, encoding="utf-8") as source:
+            baseline = json.load(source)
+        baseline_peaks = baseline.get("peaks") if isinstance(baseline, dict) else None
+        if not isinstance(baseline_peaks, list):
+            sys.exit("--baseline-payload must be a JSON object containing a peaks list")
+        try:
+            report["baseline_comparison"] = diagnostics.compare_baseline_unknowns(
+                baseline_peaks, data["peaks"]
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    report.update(
+        {
+            "file": os.path.abspath(args.h5),
+            "config": os.path.abspath(args.config),
+            "candidate_coverage": data["candidate_coverage"],
+            "mass_axis_calibration": data["meta"]["mass_axis_calibration"],
+        }
+    )
+    _emit(report, args.raw)
 
 
 def cmd_viz(args):
@@ -2951,6 +3112,7 @@ def analyze_config_to_csv(h5_path, config, out, sep=";", include_cycle_rows=True
             mass_axis=mass_axis,
             isotope_plan=isotope_plan,
             isotope_abundance_basis=settings["isotope_abundance_basis"],
+            non_analyte_masses=_non_analyte_masses(peaks),
         )
         params["peak_fit"] = fit_diagnostics
         humidity_ref = settings["humidity_ref"]
@@ -3237,9 +3399,9 @@ def main():
         dest="kinetic",
         action="store_true",
         default=None,
-        help="Apply per-compound rate-constant (k) correction for physically "
-        "resolved sensitivities (looks up k by peak 'k'/'formula'/m/z). "
-        "Diverges from a single-k reference but is more accurate.",
+        help="Apply approximate per-compound rate-constant (k) scaling (looks up "
+        "k by peak 'k'/'formula'/m/z). This is not a standards calibration and "
+        "does not correct product-ion branching.",
     )
     pa.add_argument(
         "--no-kinetic",
@@ -3287,6 +3449,27 @@ def main():
         help="Molar volume L/mol (else from drift temperature)",
     )
     pa.set_defaults(func=cmd_analyze)
+
+    pd = sub.add_parser(
+        "diagnose",
+        parents=[common],
+        help="Explain curated canonical components without changing the review",
+    )
+    pd.add_argument("h5")
+    pd.add_argument("--config", required=True, help="Existing curated review config")
+    pd.add_argument(
+        "--all-components",
+        action="store_true",
+        help="Include resolved and interpreted components (default unresolved only)",
+    )
+    pd.add_argument(
+        "--baseline-payload",
+        help=(
+            "Prior review payload JSON containing peaks; add outcomes for its "
+            "unresolved cohort without re-endorsing historical classifications"
+        ),
+    )
+    pd.set_defaults(func=cmd_diagnose)
 
     pv = sub.add_parser(
         "viz",

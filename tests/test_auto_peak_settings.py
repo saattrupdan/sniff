@@ -70,7 +70,9 @@ class AutoPeakSettingsTest(unittest.TestCase):
             ):
                 result = analyze._load_peaks(args, h5)
 
-        self.assertEqual(result, [{"mz": 30.0, "label": "test"}])
+        self.assertEqual(result[0]["mz"], 30.0)
+        self.assertEqual(result[0]["label"], "test")
+        self.assertEqual(result[0]["ion_role"]["kind"], "reagent")
         self.assertEqual(detect.call_args.kwargs["R_phys"], 3200.0)
         self.assertEqual(
             annotate.call_args.kwargs["compounds_of_interest"], ["acetone"]
