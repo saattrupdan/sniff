@@ -64,6 +64,11 @@ agent-facing contracts; `README.md` and the CLI remain the user documentation.
   parent/fragment co-variation only to rerank existing candidates or suggest fragment
   roles. It must not create formulas, override mass eligibility, prove an isomer, or be
   described as MS/MS evidence.
+- **Alternative ion candidates:** keep non-`[M+H]⁺` hypotheses separate from direct
+  formula candidates and never make them automatically assignment-eligible. Require
+  measured reagent compatibility for charge transfer/hydride abstraction and two
+  resolved, co-varying isotope satellites for a multiply charged hypothesis. Isotope and
+  fragment channels may inherit parent proposals but are not independent compounds.
 
 ## Repository workflow
 

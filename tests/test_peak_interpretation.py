@@ -43,7 +43,13 @@ def test_stronger_parent_supports_possible_isotope_interpretation():
         "candidates": [],
     }
 
-    interpret_peak_roles([parent, child])
+    unrelated = {
+        "mz": 80.0,
+        "height": 200.0,
+        "candidates": [{"formula": "C2H8O3", "iso_pred": [0.02, 0.001]}],
+    }
+
+    interpret_peak_roles([parent, child, unrelated])
 
     interpretation = child["interpretation_candidates"][0]
     assert interpretation["kind"] == "isotope"
@@ -51,6 +57,7 @@ def test_stronger_parent_supports_possible_isotope_interpretation():
     assert interpretation["related_mz"] == 55.0
     assert "spacing residual +11.9 mDa" in interpretation["evidence"]
     assert "observed ratio 0.1; predicted 0.055" in interpretation["evidence"]
+    assert interpretation["candidate_formulas"] == ["C5H10"]
 
 
 def test_isotope_spacing_outside_twelve_mda_is_not_claimed():
@@ -100,7 +107,15 @@ def test_supported_fragment_link_is_an_interpretation_not_an_identity():
                 "expected_fragment_mz": 43.018,
                 "level_correlation": 0.95,
                 "change_correlation": 0.88,
-            }
+            },
+            {
+                "parent_mz": 87.080,
+                "parent_formula": "C5H10O",
+                "candidate_name": "second ketone",
+                "expected_fragment_mz": 43.018,
+                "level_correlation": 0.90,
+                "change_correlation": 0.80,
+            },
         ],
     }
 
@@ -111,6 +126,8 @@ def test_supported_fragment_link_is_an_interpretation_not_an_identity():
     assert interpretation["exclude_from_analyte_assignment"] is True
     assert "possible fragment" in interpretation["label"]
     assert any("not MS/MS proof" in item for item in interpretation["evidence"])
+    assert interpretation["candidate_formulas"] == ["C4H8O", "C5H10O"]
+    assert interpretation["compound_candidates"] == ["second ketone", "test ketone"]
 
 
 def test_peak_without_formula_candidate_gets_explicit_unresolved_interpretation():
@@ -160,6 +177,34 @@ def test_interpretation_prevents_automatic_analyte_assignment():
 
     assert peaks[0]["suggested_label"] == "possible M+1 isotope of m/z 55.0000"
     assert "suggested_formula" not in peaks[0]
+
+
+def test_alternative_ion_candidate_is_visible_but_not_auto_assignable():
+    peak = {
+        "mz": 47.0,
+        "height": 20.0,
+        "candidates": [],
+        "ion_candidates": [
+            {
+                "formula": "C2H6O",
+                "ion_notation": "[M+H+H2O]+",
+                "pathway_reason": "measured H3O+ context",
+                "delta_ppm": 2.0,
+                "mass_match": "alternative-ion-within-run-tolerance",
+                "limitation": "ion pathway is not established",
+                "catalogue": [{"name": "ethanol"}],
+                "assignment_eligible": False,
+            }
+        ],
+    }
+
+    interpret_peak_roles([peak])
+
+    interpretation = peak["interpretation_candidates"][0]
+    assert interpretation["kind"] == "alternative-ion"
+    assert interpretation["candidate_formulas"] == ["C2H6O"]
+    assert interpretation["compound_candidates"] == ["ethanol"]
+    assert interpretation["exclude_from_analyte_assignment"] is True
 
 
 def test_ptr_fixture_has_candidate_or_interpretation_for_every_peak():

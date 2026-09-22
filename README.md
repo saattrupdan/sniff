@@ -411,6 +411,24 @@ formula, make a 200 ppm proposal assignment-eligible, prove a structural isomer,
 as MS/MS evidence. Co-variation can reflect shared sample timing, and Sniff does not
 recombine fragment channels for quantification.
 
+For channels without a direct `[M+H]⁺` proposal, Sniff separately evaluates explicit
+ion-chemistry hypotheses. In a measured H₃O⁺ run these include hydrated and dehydrated
+protonated products; charge-transfer or hydride-abstraction searches are enabled only
+when the corresponding O₂⁺ or NO⁺ reagent evidence is present. A multiply charged
+proposal requires two resolved isotope satellites at the expected fractional spacing
+and matching cycle-level and cycle-change behaviour. These results appear under
+`ion_candidates`, retain their ion notation and evidence, and are never automatically
+assigned as neutral analytes. Supported isotope and library-fragment channels inherit
+the parent formula/name proposals without pretending that the channel is another
+compound.
+
+`sniff peaks` reports `candidate_coverage` over the cleaned detected-peak list. Its
+categories partition that list into direct protonated formulas, alternative-ion
+formulas, inherited parent candidates, non-compound interpretations and unresolved
+channels. Both formula/link coverage and named-compound coverage are shown. The metric
+counts proposals, not unique identities or calibrated confidence; detector artefacts
+removed by the existing peak-shape safeguards are reported separately.
+
 By default `analyze` integrates each interval with each isolated peak's apex/window
 **re-centred on that interval's own spectrum** — peaks drift between intervals (a
 compound may be absent in a background), so one whole-run window sits off-peak

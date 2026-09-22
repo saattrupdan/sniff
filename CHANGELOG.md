@@ -9,6 +9,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Peak discovery now reports versioned candidate coverage and separate alternative-ion
+  proposals for condition-compatible hydration, water loss, charge transfer, hydride
+  abstraction and evidence-backed multiply charged envelopes. Isotope and known-fragment
+  channels inherit parent compound proposals without becoming automatic neutral-analyte
+  assignments.
 - New analyses learn an empirical peak shape from clean isolated channels and use
   bounded, non-negative run/interval fits for overlapping groups. Rank, conditioning,
   correlation, residual and fallback diagnostics prevent unresolved components from

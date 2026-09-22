@@ -48,7 +48,7 @@ from contextlib import ExitStack
 import h5py
 import numpy as np
 
-from . import catalogue, formula_id, fragmentation, ptrms
+from . import catalogue, formula_id, fragmentation, ion_roles, isotopes, ptrms
 
 _ANALYSIS_DEFAULTS = {
     "R": 1200.0,
@@ -662,6 +662,13 @@ def apply_run_fragmentation_evidence(
     context = fragmentation.reaction_context(f)
     masses = [float(peak["mz"]) for peak in peaks]
     if not masses or "SPECdata/Intensities" not in f:
+        ion_roles.annotate_ion_candidates(
+            peaks,
+            catalogue.CompoundCatalogue(),
+            context,
+            drift=drift,
+        )
+        interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
         return context
     traces, _ = ptrms.extract_traces(
         f,
@@ -672,12 +679,20 @@ def apply_run_fragmentation_evidence(
         progress=progress,
         should_stop=should_stop,
     )
+    trace_map = {mass: traces[mass][0] for mass in masses}
     fragmentation.apply_fragmentation_evidence(
         peaks,
-        {mass: traces[mass][0] for mass in masses},
+        trace_map,
         ptrms.load_rate_constants(),
         context,
         r_phys=R_phys,
+    )
+    ion_roles.annotate_ion_candidates(
+        peaks,
+        catalogue.CompoundCatalogue(),
+        context,
+        traces=trace_map,
+        drift=drift,
     )
     interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
     return context
@@ -762,7 +777,22 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
             and not validated_candidates
             and peak.get("fragmentation_links")
         ):
-            link = peak["fragmentation_links"][0]
+            links = peak["fragmentation_links"]
+            link = links[0]
+            candidate_formulas = sorted(
+                {
+                    item["parent_formula"]
+                    for item in links
+                    if item.get("parent_formula")
+                }
+            )
+            compound_candidates = sorted(
+                {
+                    item["candidate_name"]
+                    for item in links
+                    if item.get("candidate_name")
+                }
+            )
             identity = link.get("candidate_name") or link.get("parent_formula")
             interpretations.append(
                 {
@@ -773,10 +803,13 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     ),
                     "source": "PTR Library pathway and measured temporal co-variation",
                     "related_mz": link["parent_mz"],
+                    "candidate_formulas": candidate_formulas,
+                    "compound_candidates": compound_candidates,
                     "evidence": [
+                        f"{len(links)} supported parent/pathway candidate(s)",
                         f"library fragment m/z {float(link['expected_fragment_mz']):.4f}",
                         (
-                            "level/change correlations "
+                            "best level/change correlations "
                             f"{float(link['level_correlation']):.2f}/"
                             f"{float(link['change_correlation']):.2f}"
                         ),
@@ -790,11 +823,9 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
             isotope_options = []
             for order, spacing in ((1, formula_id.DM1), (2, formula_id.DM2)):
                 for parent_index, parent_mass in enumerate(masses):
-                    parent_candidates = [
-                        candidate
-                        for candidate in peaks[parent_index].get("candidates") or []
-                        if candidate.get("assignment_eligible", True)
-                    ]
+                    parent_candidates = ion_roles.candidate_summaries(
+                        peaks[parent_index]
+                    )
                     if (
                         parent_index == index
                         or heights[parent_index] <= heights[index]
@@ -802,9 +833,16 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     ):
                         continue
                     residual = masses[index] - parent_mass - spacing
-                    predicted = float(
-                        (parent_candidates[0].get("iso_pred") or [0.0, 0.0])[order - 1]
-                    )
+                    try:
+                        predicted_values = parent_candidates[0].get("iso_pred")
+                        if predicted_values is None:
+                            counts = isotopes.parse_formula(
+                                parent_candidates[0]["formula"]
+                            )
+                            predicted_values = formula_id.isotope_ratios(counts)
+                        predicted = float(predicted_values[order - 1])
+                    except (KeyError, ValueError):
+                        predicted = 0.0
                     ratio = heights[index] / heights[parent_index]
                     compatible = predicted > 0 and ratio <= max(
                         predicted * 3.0, predicted + 0.02
@@ -827,12 +865,15 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     _,
                     _,
                     parent_mass,
-                    _parent_index,
+                    parent_index,
                     order,
                     residual,
                     ratio,
                     predicted,
                 ) = min(isotope_options)
+                parent_candidates = ion_roles.candidate_summaries(
+                    peaks[parent_index]
+                )
                 interpretations.append(
                     {
                         "kind": "isotope",
@@ -840,6 +881,16 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                         "source": "measured spacing and predicted isotope envelope",
                         "related_mz": round(parent_mass, 4),
                         "isotope_order": order,
+                        "candidate_formulas": [
+                            candidate["formula"] for candidate in parent_candidates
+                        ],
+                        "compound_candidates": sorted(
+                            {
+                                name
+                                for candidate in parent_candidates
+                                for name in candidate.get("names", [])
+                            }
+                        ),
                         "evidence": [
                             f"spacing residual {residual * 1000:+.1f} mDa",
                             f"observed ratio {ratio:.3g}; predicted {predicted:.3g}",
@@ -847,6 +898,43 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                         "exclude_from_analyte_assignment": True,
                     }
                 )
+
+        if (
+            not interpretations
+            and not validated_candidates
+            and peak.get("ion_candidates")
+        ):
+            candidate = peak["ion_candidates"][0]
+            names = ion_roles.candidate_summaries(peak)[0].get("names", [])
+            identity = names[0] if names else candidate["formula"]
+            interpretations.append(
+                {
+                    "kind": "alternative-ion",
+                    "label": (
+                        f"possible {candidate['ion_notation']} ion: {identity}"
+                    ),
+                    "source": "explicit alternative PTR ion-chemistry hypothesis",
+                    "candidate_formulas": sorted(
+                        {item["formula"] for item in peak["ion_candidates"]}
+                    ),
+                    "compound_candidates": sorted(
+                        {
+                            name
+                            for summary in ion_roles.candidate_summaries(peak)
+                            for name in summary.get("names", [])
+                        }
+                    ),
+                    "evidence": [
+                        candidate["pathway_reason"],
+                        (
+                            f"{candidate['delta_ppm']:+.1f} ppm mass residual; "
+                            f"{candidate['mass_match']}"
+                        ),
+                        candidate["limitation"],
+                    ],
+                    "exclude_from_analyte_assignment": True,
+                }
+            )
 
         if not interpretations and not validated_candidates:
             authored_formula = peak.get("formula") or peak.get("suggested_formula")
@@ -1205,6 +1293,8 @@ def _compact_peak(e):
         out["interpretation_candidates"] = e["interpretation_candidates"]
     if "fragmentation_links" in e:
         out["fragmentation_links"] = e["fragmentation_links"]
+    if "ion_candidates" in e:
+        out["ion_candidates"] = e["ion_candidates"]
     return out
 
 
@@ -1274,6 +1364,7 @@ def cmd_peaks(args):
         any(candidate.get("assignment_eligible", True) for candidate in p.get("candidates", []))
         for p in peaks
     )
+    candidate_coverage = ion_roles.coverage_summary(peaks)
     # near-duplicate 'peak intervals': windows almost on top of each other
     dup_pairs = _window_overlap_pairs(peaks)
     full = getattr(args, "full", False)
@@ -1296,7 +1387,10 @@ def cmd_peaks(args):
             "`iso_pred` vs `iso_obs` = predicted vs observed (M+1,M+2)/M. "
             "`fragmentation_evidence` reports condition-matched PTR Library pathways "
             "and temporal co-variation; it can reorder existing candidates but never "
-            "create one or override `assignment_eligible`. `suggested_label` is an "
+            "create one or override `assignment_eligible`. `ion_candidates` holds "
+            "separate, non-assignable formula/name proposals for explicit alternative "
+            "ion chemistry such as water loss, hydration, supported charge transfer or "
+            "measured multiply charged envelopes. `suggested_label` is an "
             "editable, globally unique high-ranked default. "
             "`interpretation_candidates` explains reagent, isotope, artefact, authored "
             "or unresolved channels when a neutral compound assignment would mislead. "
@@ -1355,6 +1449,7 @@ def cmd_peaks(args):
             "n_mass_validated": n_mass_validated,
             "n_provisional_only": n_with_formula_proposals - n_mass_validated,
             "n_without_formula_proposals": len(peaks) - n_with_formula_proposals,
+            "candidate_coverage": candidate_coverage,
             "n_ambiguous": n_amb,
             "n_overlapping": n_ovl,
             "n_window_overlap_pairs": len(dup_pairs),

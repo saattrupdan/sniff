@@ -108,6 +108,15 @@ Mapping rows, or residuals above 10 ppm, disable automatic formula assignment wi
 hiding the broad proposal list. Block-to-block internal-reference movement remains a
 temporal-stability diagnostic rather than an accuracy estimate.
 
+Candidate discovery first tests direct `[M+H]⁺` formulas. Separate versioned ion
+hypotheses may then propose hydrated/dehydrated products under measured H₃O⁺ conditions,
+charge transfer or hydride abstraction when matching reagent evidence exists, and `z=2`
+or `z=3` only after two fractional-spacing isotope satellites co-vary with the parent.
+These alternatives retain the same ppm limits but are never assignment-eligible.
+Known isotope and fragment channels can carry their parent candidate list while remaining
+non-analyte channels. The reported candidate-coverage categories partition the cleaned
+peak list, excluding detector artefacts already rejected by peak-shape diagnostics.
+
 ## The four quantities
 
 ### 1. Raw [cps]

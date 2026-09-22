@@ -37,7 +37,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
-from . import brand, catalogue, formula_id, fragmentation, ptrms
+from . import brand, catalogue, formula_id, fragmentation, ion_roles, ptrms
 
 logger = logging.getLogger(__name__)
 
@@ -685,15 +685,23 @@ def build_viz_data(
             }
         )
     fragmentation_context = fragmentation.reaction_context(f)
+    role_traces = {
+        float(peak["mz"]): raw_traces[float(peaks_cfg[index]["mz"])]
+        for index, peak in enumerate(peaks)
+    }
     fragmentation.apply_fragmentation_evidence(
         peaks,
-        {
-            float(peak["mz"]): raw_traces[float(peaks_cfg[index]["mz"])]
-            for index, peak in enumerate(peaks)
-        },
+        role_traces,
         ptrms.load_rate_constants(),
         fragmentation_context,
         r_phys=R_phys,
+    )
+    ion_roles.annotate_ion_candidates(
+        peaks,
+        catalogue.CompoundCatalogue(),
+        fragmentation_context,
+        traces=role_traces,
+        drift=drift,
     )
     from .analyze import interpret_peak_roles
 
@@ -1576,6 +1584,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
     <li><b>One empirical profile family</b> across the spectrum — version-2 deconvolution learns asymmetry from clean run peaks and permits bounded centre/width changes, but physically coalesced components remain unidentifiable and are withheld.</li>
     <li><b>Single sensitivity K</b> unless per-compound kinetic mode is on; the shared-K assumption is only exact for compounds with similar reaction rate constants.</li>
     <li><b>Fragmentation evidence, not correction</b> — condition-matched PTR Library product ions and measured temporal co-variation can support and rerank an existing exact-mass formula proposal. They cannot create a candidate, override the run mass gate, or prove an isomer. Every channel is still quantified independently, so fragmenting compounds may read low.</li>
+    <li><b>Alternative ions stay proposals</b> — hydration, water loss, charge transfer, hydride abstraction and multiply charged envelopes are shown with their explicit ion notation and evidence. They never become automatic neutral-analyte assignments.</li>
     <li><b>Humidity dependence</b> is an optional, empirical normalisation, not a full ion-chemistry model; leave it off unless you have reason to apply it.</li>
     <li><b>Mass-axis authority is explicit</b> — three or more valid Mapping references are authoritative. Only two-row Mapping and Spectrum fallback files require both internal water-cluster and iodobenzene references for an affine correction.</li>
     <li><b>Identification is a ranking, not proof</b>: candidate percentages are relative score/share, not calibrated identification confidence; unresolved overlaps are flagged and the expert makes the final call.</li>
@@ -2635,9 +2644,15 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
     ? '<div class="idnote"><b>Natural isotopes:</b> '+p.isotopes.channels.map(ch=>'M+'+ch.order+' '+(+ch.mz).toFixed(4)+' expected '+pct(ch.ratio_expected)+(ch.ratio_observed==null?' · '+ch.status:' / observed '+pct(ch.ratio_observed))).join('<br>')+'<br>Monoisotopic fraction '+pct(p.isotopes.monoisotopic_fraction)+'. Isotope agreement supports the formula but does not prove identity.</div>'
     : '';
   const interpretationNote=p&&(p.interpretation_candidates||[]).length
-    ? '<div class="idnote warn"><b>Interpretation candidates:</b> '+p.interpretation_candidates.map(item=>
-        esc(item.label)+' — '+esc((item.evidence||[]).join('; '))).join('<br>')+
-      '<br>These explain non-analyte or unresolved channels; they are not compound identifications.</div>'
+    ? '<div class="idnote warn"><b>Interpretation candidates:</b> '+p.interpretation_candidates.map(item=>{
+        const linked=(item.compound_candidates||[]).length
+          ? ' · compound candidates: '+item.compound_candidates.join(', ')
+          : (item.candidate_formulas||[]).length
+            ? ' · formula candidates: '+item.candidate_formulas.join(', ')
+            : '';
+        return esc(item.label)+' — '+esc((item.evidence||[]).join('; ')+linked);
+      }).join('<br>')+
+      '<br>These are explicit candidate hypotheses, not unique compound identifications.</div>'
     : '';
   const nameConf=p?labelConflict(p):null;
   const confNote=nameConf?'<div class="idnote warn" style="margin-bottom:8px"><b>Name and formula disagree:</b> '+esc(nameConf)+'.</div>':'';
@@ -2645,7 +2660,7 @@ function renderId(){ const el=document.getElementById("idpanel"), conf=document.
   if(!p){ el.innerHTML='<div class="mut">Select a peak to see candidate formulas, ranked by measured exact mass, isotope evidence, and chemistry plausibility.</div>';
     if(conf) conf.textContent=""; return; }
   if(!p.candidates||!p.candidates.length){
-    if(conf) conf.innerHTML=status+' <span class="mut">· no generated formula candidates</span>';
+    if(conf) conf.innerHTML=status+' <span class="mut">· no direct [M+H]+ formula candidates</span>';
     const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     // no enumerated candidate (a reagent/inorganic ion, a manually-added peak, or a
     // mass outside the organic window) — still surface the current assignment rather
