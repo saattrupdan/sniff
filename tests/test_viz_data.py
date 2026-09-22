@@ -55,6 +55,7 @@ class VizDataTest(unittest.TestCase):
         self.assertEqual(data["spectrum"], [1, 0, 0, 0, 5])
         self.assertIn("mass_axis_calibration", data["meta"])
         self.assertTrue(data["meta"]["mass_axis_calibration"]["applied"])
+        self.assertEqual(data["candidate_coverage"]["total_components"], 0)
         json.dumps(data, allow_nan=False)
 
     def test_peak_abundance_is_mean_integrated_raw_signal(self):

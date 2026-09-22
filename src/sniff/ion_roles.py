@@ -166,6 +166,7 @@ def coverage_summary(peaks):
         "direct_protonated_formula",
         "alternative_ion_formula",
         "inherited_parent_candidate",
+        "authored_assignment",
         "interpreted_noncompound",
         "unknown",
     )
@@ -261,6 +262,8 @@ def _peak_category(peak):
     interpretations = peak.get("interpretation_candidates") or []
     if any(item.get("candidate_formulas") for item in interpretations):
         return "inherited_parent_candidate"
+    if any(item.get("kind") == "authored" for item in interpretations):
+        return "authored_assignment"
     if any(
         not str(item.get("kind", "")).startswith("unresolved")
         for item in interpretations

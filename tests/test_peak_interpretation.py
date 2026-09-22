@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import numpy as np
+
 from sniff import formula_id
 from sniff.analyze import (
     _assign_suggested_identities,
     _compact_peak,
     annotate_peaks,
+    apply_background_evidence,
     interpret_peak_roles,
 )
 
@@ -20,6 +23,43 @@ def test_known_reagent_gets_non_analyte_interpretation():
     assert interpretation["exclude_from_analyte_assignment"] is True
     assert peaks[0]["ion_role"]["model"] == "ion-role-v1"
     assert peaks[0]["ion_role"]["status"] == "supported"
+
+
+def test_run_consistent_marker_shift_recovers_displaced_reagent_roles():
+    markers = [
+        (19.018 + 0.017, "H3O+ primary"),
+        (21.022 + 0.007, "H3O+ (18O) isotope"),
+        (29.997 + 0.013, "NO+"),
+        (30.994 + 0.010, "NO+ (15N) isotope"),
+        (32.997 + 0.008, "O2+ (17O)"),
+        (37.033 + 0.016, "H3O+·H2O cluster (operational calibration water)"),
+    ]
+    peaks = [
+        {"mz": mass, "height": 100.0, "candidates": []}
+        for mass, _ in markers
+    ]
+
+    interpret_peak_roles(peaks)
+
+    assert [peak["ion_role"]["label"] for peak in peaks] == [
+        label for _, label in markers
+    ]
+    shifted = peaks[0]["interpretation_candidates"][0]
+    assert shifted["source"] == "run-consistent reagent-ion centroid displacement"
+    assert any("formula masses" in item for item in shifted["evidence"])
+
+
+def test_inconsistent_markers_do_not_widen_reagent_role_matching():
+    peaks = [
+        {"mz": 19.018 + 0.020, "height": 100.0, "candidates": []},
+        {"mz": 21.022 + 0.001, "height": 100.0, "candidates": []},
+        {"mz": 30.994 + 0.010, "height": 100.0, "candidates": []},
+        {"mz": 32.997 - 0.008, "height": 100.0, "candidates": []},
+    ]
+
+    interpret_peak_roles(peaks)
+
+    assert peaks[0]["ion_role"]["kind"] == "unresolved"
 
 
 def test_isobaric_water_cluster_does_not_suppress_valid_analyte_candidate():
@@ -95,6 +135,46 @@ def test_valid_formula_candidate_is_not_reclassified_as_an_isotope():
     interpret_peak_roles([parent, independent])
 
     assert "interpretation_candidates" not in independent
+
+
+def test_background_ranges_create_noncompound_role_without_overriding_formula():
+    ranges = [
+        {"label": "sample_01", "class": "sample", "start": 1, "end": 3},
+        {
+            "label": "background_01",
+            "class": "background",
+            "start": 4,
+            "end": 6,
+        },
+    ]
+    unknown = {"mz": 55.0, "height": 10.0, "candidates": []}
+    identified = {
+        "mz": 57.0,
+        "height": 10.0,
+        "candidates": [{"formula": "C3H4O", "assignment_eligible": True}],
+    }
+    authored = {
+        "mz": 59.0,
+        "height": 10.0,
+        "formula": "C3H6O",
+        "label": "saved assignment",
+        "candidates": [],
+    }
+    traces = {
+        55.0: np.array([1.0, 1.0, 1.0, 10.0, 10.0, 10.0]),
+        57.0: np.array([1.0, 1.0, 1.0, 10.0, 10.0, 10.0]),
+        59.0: np.array([1.0, 1.0, 1.0, 10.0, 10.0, 10.0]),
+    }
+
+    apply_background_evidence([unknown, identified, authored], traces, ranges)
+    interpret_peak_roles([unknown, identified, authored])
+
+    assert unknown["ion_role"]["kind"] == "background"
+    assert unknown["ion_role"]["exclude_from_analyte_assignment"] is True
+    assert identified.get("ion_role") is None
+    assert identified["background_evidence"]["sample_over_background"] == 0.1
+    assert authored["ion_role"]["kind"] == "authored"
+    assert authored["background_evidence"]["sample_over_background"] == 0.1
 
 
 def test_supported_fragment_link_is_an_interpretation_not_an_identity():

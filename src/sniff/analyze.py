@@ -415,6 +415,55 @@ _REAGENT_MZ = {
     30.994: "NO+ (15N) isotope",
 }
 _REAGENT_TOL_DA = 0.012
+_REAGENT_SHIFT_AGREEMENT_DA = 0.012
+_REAGENT_SHIFT_MAX_DA = 0.025
+
+
+def _reagent_roles(masses):
+    roles = {}
+    anchors = []
+    for marker_mz, marker_name in _REAGENT_MZ.items():
+        index = min(range(len(masses)), key=lambda item: abs(masses[item] - marker_mz))
+        residual = masses[index] - marker_mz
+        if abs(residual) <= _REAGENT_TOL_DA:
+            anchors.append((index, marker_mz, marker_name, residual))
+            roles[index] = {
+                "label": marker_name,
+                "marker_mz": marker_mz,
+                "residual": residual,
+                "source": "known reagent-ion exact mass",
+                "evidence": [
+                    f"nearest reagent marker within {_REAGENT_TOL_DA * 1000:.0f} mDa"
+                ],
+            }
+    if len({marker for _, marker, _, _ in anchors}) < 3:
+        return roles
+    shift = float(np.median([residual for _, _, _, residual in anchors]))
+    if max(abs(residual - shift) for _, _, _, residual in anchors) > 0.006:
+        return roles
+    for marker_mz, marker_name in _REAGENT_MZ.items():
+        index = min(
+            range(len(masses)),
+            key=lambda item: abs(masses[item] - marker_mz - shift),
+        )
+        residual = masses[index] - marker_mz
+        if (
+            abs(residual) <= _REAGENT_SHIFT_MAX_DA
+            and abs(residual - shift) <= _REAGENT_SHIFT_AGREEMENT_DA
+        ):
+            roles[index] = {
+                "label": marker_name,
+                "marker_mz": marker_mz,
+                "residual": residual,
+                "source": "run-consistent reagent-ion centroid displacement",
+                "evidence": [
+                    f"expected marker {marker_mz:.3f} m/z",
+                    f"observed residual {residual * 1000:+.1f} mDa",
+                    f"run marker shift {shift * 1000:+.1f} mDa from {len(anchors)} anchors",
+                    "role-only correction; formula masses and calibration are unchanged",
+                ],
+            }
+    return roles
 
 
 def annotate_peaks(
@@ -480,17 +529,9 @@ def annotate_peaks(
         return (wsum(mz + formula_id.DM1) / i0, wsum(mz + formula_id.DM2) / i0)
 
     all_mz = sorted(q["mz"] for q in peaks)
-    reagent_labels = {}
-    for reagent_mz, reagent_name in _REAGENT_MZ.items():
-        if not peaks:
-            break
-        index, nearest = min(
-            enumerate(peaks),
-            key=lambda item: abs(item[1]["mz"] - reagent_mz * drift),
-        )
-        difference = abs(nearest["mz"] - reagent_mz * drift)
-        if difference <= _REAGENT_TOL_DA:
-            reagent_labels[index] = reagent_name
+    reagent_roles = (
+        _reagent_roles([float(peak["mz"]) / drift for peak in peaks]) if peaks else {}
+    )
 
     def nearest_other(mz):
         best = None
@@ -609,14 +650,22 @@ def annotate_peaks(
                     "must establish whether independent deconvolution is reliable",
                 }
         flags = []
-        if peak_index in reagent_labels:
-            reagent_name = reagent_labels[peak_index]
+        if peak_index in reagent_roles:
+            reagent_role = reagent_roles[peak_index]
+            reagent_name = reagent_role["label"]
             isobaric_water_cluster = reagent_name.startswith("H3O+·(")
             if not (isobaric_water_cluster and cands):
                 flags.append("reagent/cluster: " + reagent_name)
+                e["reagent_role_evidence"] = reagent_role
         for q in peaks:
-            if 0.008 < mz - q["mz"] < 0.4 and q.get("height", 0) > 20 * max(h, 1):
-                flags.append(f"possible tail/ringing of taller m/z {q['mz']:.3f}")
+            if (
+                not cands
+                and 0.008 < mz - q["mz"] < 0.4
+                and q.get("height", 0) > 20 * max(h, 1)
+            ):
+                flags.append(
+                    f"possible high-side shoulder of taller m/z {q['mz']:.3f}"
+                )
                 break
         # low-prominence noise: an apex that barely rises above its local baseline
         # is a ripple/shoulder on a taller peak's flank, not a resolved peak. Catches
@@ -625,7 +674,12 @@ def annotate_peaks(
         # away. Requires BOTH a small absolute rise and a small fraction of its own
         # height, so a genuinely isolated small peak (which rises from ~0) is kept.
         prom = p.get("prominence")
-        if prom is not None and prom < 10.0 and prom < 0.2 * max(h, 1):
+        if (
+            not cands
+            and prom is not None
+            and prom < 10.0
+            and prom < 0.2 * max(h, 1)
+        ):
             flags.append(
                 f"low prominence ({prom:.1f} cps above local baseline) — likely a "
                 "noise ripple / shoulder of a nearby taller peak"
@@ -638,7 +692,7 @@ def annotate_peaks(
         # (ammonia at 18.03 sits BELOW the primary and is untouched), so peaks there
         # — which are high-prominence and thus escape the ripple test — are flagged
         # as reagent-region artifacts, not analytes.
-        if 19.05 < mz < 20.95 and not any(
+        if not cands and 19.05 < mz < 20.95 and not any(
             fl.startswith("reagent/cluster") for fl in flags
         ):
             flags.append(
@@ -651,6 +705,174 @@ def annotate_peaks(
     interpret_peak_roles(out, drift=drift, R_phys=R_phys)
     _assign_suggested_identities(out, assign_all_library=assign_all_library)
     return drift, out
+
+
+def _annotate_timebin_ringing(peaks, traces, mass_axis):
+    """Classify repeated delayed detector echoes only with temporal support."""
+    if mass_axis is None or not mass_axis.applied or len(peaks) < 2:
+        return
+
+    records = [
+        {
+            "index": index,
+            "mz": float(peak.get("apex", peak["mz"])),
+            "trace_mz": float(peak["mz"]),
+            "timebin": float(
+                mass_axis.m_to_tb(float(peak.get("apex", peak["mz"])))
+            ),
+            "height": max(0.0, float(peak.get("height", 0.0))),
+            "prominence": max(0.0, float(peak.get("prominence", 0.0))),
+        }
+        for index, peak in enumerate(peaks)
+    ]
+    pairs = []
+    for child in records:
+        child_peak = peaks[child["index"]]
+        if (
+            child_peak.get("candidates")
+            or child_peak.get("ion_candidates")
+            or child_peak.get("formula")
+            or child_peak.get("suggested_formula")
+        ):
+            continue
+        if any(
+            str(flag).startswith("reagent/cluster: ")
+            for flag in child_peak.get("likely_artifact") or []
+        ):
+            continue
+        for parent in records:
+            if (
+                parent["mz"] <= 25.0
+                or parent["mz"] >= child["mz"]
+                or parent["height"] < 2.0 * max(child["height"], 1.0)
+                or parent["prominence"] < 100.0
+                or parent["prominence"] < 0.3 * max(parent["height"], 1.0)
+                or _is_noise_artifact(
+                    peaks[parent["index"]].get("likely_artifact")
+                )
+            ):
+                continue
+            delay = child["timebin"] - parent["timebin"]
+            if 250.0 <= delay <= 400.0:
+                pairs.append(
+                    {
+                        "child": child,
+                        "parent": parent,
+                        "delay": delay,
+                        "seed": (
+                            parent["height"] > 20.0 * max(child["height"], 1.0)
+                            and child["mz"] - parent["mz"] < 0.4
+                        ),
+                    }
+                )
+
+    mode_learning_tolerance = 6.0
+    mode_match_tolerance = 8.0
+    mode_options = []
+    for centre in range(250, 401):
+        nearby = [
+            pair
+            for pair in pairs
+            if abs(pair["delay"] - centre) <= mode_learning_tolerance
+        ]
+        parents = {round(pair["parent"]["mz"], 4) for pair in nearby}
+        seed_parents = {
+            round(pair["parent"]["mz"], 4) for pair in nearby if pair["seed"]
+        }
+        if (
+            len(seed_parents) >= 3
+            or (seed_parents and len(parents) >= 5)
+            or len(parents) >= 8
+        ):
+            mode_options.append((len(seed_parents), len(parents), centre))
+    modes = []
+    for seed_count, parent_count, centre in sorted(mode_options, reverse=True):
+        if any(abs(centre - selected["delay_timebins"]) <= 12 for selected in modes):
+            continue
+        modes.append(
+            {
+                "delay_timebins": float(centre),
+                "seed_parent_count": seed_count,
+                "parent_count": parent_count,
+            }
+        )
+        if len(modes) == 4:
+            break
+    if not modes:
+        return
+
+    for child in records:
+        peak = peaks[child["index"]]
+        if (
+            peak.get("candidates")
+            or peak.get("ion_candidates")
+            or peak.get("formula")
+            or peak.get("suggested_formula")
+            or _is_noise_artifact(peak.get("likely_artifact"))
+            or any(
+                str(flag).startswith("reagent/cluster: ")
+                for flag in peak.get("likely_artifact") or []
+            )
+        ):
+            continue
+        options = []
+        for pair in pairs:
+            if pair["child"]["index"] != child["index"]:
+                continue
+            for mode in modes:
+                residual = pair["delay"] - mode["delay_timebins"]
+                if abs(residual) <= mode_match_tolerance:
+                    options.append((abs(residual), -pair["parent"]["height"], pair, mode))
+        if not options:
+            continue
+        _, _, pair, mode = min(options, key=lambda item: (item[0], item[1]))
+        parent_mz = pair["parent"]["mz"]
+        correlation = fragmentation._correlation(
+            traces[pair["parent"]["trace_mz"]],
+            traces[child["trace_mz"]],
+        )
+        supported = bool(
+            correlation
+            and float(correlation.get("level_correlation", -1.0)) >= 0.70
+            and float(correlation.get("change_correlation", -1.0)) >= 0.60
+        )
+        evidence = {
+            "model": "calibrated-timebin-ringing-v1",
+            "status": "likely" if supported else "supporting",
+            "parent_mz": round(parent_mz, 4),
+            "parent_trace_mz": round(pair["parent"]["trace_mz"], 4),
+            "observed_mz": round(child["mz"], 4),
+            "trace_mz": round(child["trace_mz"], 4),
+            "delay_timebins": round(pair["delay"], 2),
+            "delay_mode_timebins": mode["delay_timebins"],
+            "delay_residual_timebins": round(
+                pair["delay"] - mode["delay_timebins"], 2
+            ),
+            "mode_parent_count": mode["parent_count"],
+            "mode_seed_parent_count": mode["seed_parent_count"],
+            "parent_to_child_height_ratio": round(
+                pair["parent"]["height"] / max(child["height"], 1.0), 2
+            ),
+            "trace_correlation": correlation,
+            "ringing_trace_thresholds": {
+                "minimum_level_correlation": 0.70,
+                "minimum_change_correlation": 0.60,
+                "supported": supported,
+            },
+            "limitation": (
+                "formula absence is not artefact evidence; classification requires "
+                "a repeated calibrated-timebin delay and supported temporal correlation"
+            ),
+        }
+        peak["artifact_evidence"] = evidence
+        if supported:
+            peak.setdefault("likely_artifact", []).append(
+                "calibrated time-bin ringing echo of taller m/z "
+                f"{parent_mz:.4f} (delay {pair['delay']:.1f} bins; "
+                f"level/change correlations "
+                f"{correlation['level_correlation']:.2f}/"
+                f"{correlation['change_correlation']:.2f})"
+            )
 
 
 def apply_run_fragmentation_evidence(
@@ -708,8 +930,63 @@ def apply_run_fragmentation_evidence(
         traces=trace_map,
         drift=drift,
     )
+    _annotate_timebin_ringing(peaks, trace_map, mass_axis)
     interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
     return context
+
+
+def apply_background_evidence(peaks, traces, ranges):
+    """Attach sample/background evidence without changing chemical assignments."""
+    sample_ranges = [item for item in ranges if item.get("class") == "sample"]
+    background_ranges = [item for item in ranges if item.get("class") == "background"]
+    if not sample_ranges or not background_ranges:
+        return peaks
+
+    def interval_mean(trace, item):
+        lo = max(0, int(item["start"]) - 1)
+        hi = min(len(trace), int(item["end"]))
+        values = np.asarray(trace[lo:hi], dtype=np.float64)
+        values = values[np.isfinite(values)]
+        return float(np.mean(values)) if values.size else None
+
+    for peak in peaks:
+        mass = float(peak["mz"])
+        trace = traces.get(mass)
+        if trace is None:
+            continue
+        sample_values = [interval_mean(trace, item) for item in sample_ranges]
+        background_values = [interval_mean(trace, item) for item in background_ranges]
+        sample_values = [value for value in sample_values if value is not None]
+        background_values = [value for value in background_values if value is not None]
+        if (
+            len(sample_values) != len(sample_ranges)
+            or len(background_values) != len(background_ranges)
+        ):
+            continue
+        sample_mean = float(np.mean(sample_values))
+        background_mean = float(np.mean(background_values))
+        ratio = sample_mean / background_mean if background_mean > 0 else float("inf")
+        trend = (
+            background_values[-1] / background_values[0]
+            if len(background_values) >= 2 and background_values[0] > 0
+            else None
+        )
+        if ratio < 0.9:
+            peak["background_evidence"] = {
+                "model": "sample-background-v1",
+                "status": "background-like",
+                "sample_over_background": round(ratio, 3),
+                "background_last_over_first": (
+                    round(trend, 3) if trend is not None else None
+                ),
+                "sample_ranges": len(sample_values),
+                "background_ranges": len(background_values),
+                "limitation": (
+                    "sample/background behaviour supports a non-analyte interpretation "
+                    "but does not identify the ion or prove detector contamination"
+                ),
+            }
+    return peaks
 
 
 def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
@@ -734,13 +1011,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
 
     masses = [measured_mz(peak) for peak in peaks]
     heights = [abundance(peak) for peak in peaks]
-    reagent_by_index = {}
-    for marker_mz, marker_name in _REAGENT_MZ.items():
-        nearest_index = min(
-            range(len(peaks)), key=lambda candidate: abs(masses[candidate] - marker_mz)
-        )
-        if abs(masses[nearest_index] - marker_mz) <= _REAGENT_TOL_DA:
-            reagent_by_index[nearest_index] = marker_name
+    reagent_by_index = _reagent_roles(masses)
     for index, peak in enumerate(peaks):
         interpretations = []
         validated_candidates = [
@@ -757,8 +1028,10 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
             ),
             None,
         )
-        if reagent is None:
-            reagent = reagent_by_index.get(index)
+        reagent_evidence = peak.get("reagent_role_evidence")
+        if reagent is None and index in reagent_by_index:
+            reagent_evidence = reagent_by_index[index]
+            reagent = reagent_evidence["label"]
         isobaric_water_cluster = bool(reagent and reagent.startswith("H3O+·("))
         if isobaric_water_cluster and validated_candidates:
             reagent = None
@@ -767,10 +1040,18 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                 {
                     "kind": "reagent",
                     "label": reagent,
-                    "source": "known reagent-ion exact mass",
-                    "evidence": [
-                        f"nearest reagent marker within {_REAGENT_TOL_DA * 1000:.0f} mDa"
-                    ],
+                    "source": (
+                        reagent_evidence.get("source")
+                        if reagent_evidence
+                        else "known reagent-ion exact mass"
+                    ),
+                    "evidence": (
+                        list(reagent_evidence.get("evidence") or [])
+                        if reagent_evidence
+                        else [
+                            "reagent marker supplied by the peak annotation stage"
+                        ]
+                    ),
                     "exclude_from_analyte_assignment": True,
                 }
             )
@@ -782,6 +1063,34 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                     "label": "detector artefact / noise",
                     "source": "peak-shape and reagent-region diagnostics",
                     "evidence": noise_flags,
+                    "exclude_from_analyte_assignment": True,
+                }
+            )
+
+        authored_formula = peak.get("formula") or peak.get("suggested_formula")
+        if (
+            not interpretations
+            and not validated_candidates
+            and not authored_formula
+            and peak.get("background_evidence")
+        ):
+            background = peak["background_evidence"]
+            trend = background.get("background_last_over_first")
+            interpretations.append(
+                {
+                    "kind": "background",
+                    "label": f"background-like ion at m/z {masses[index]:.4f}",
+                    "source": "measured sample/background range comparison",
+                    "evidence": [
+                        "sample/background ratio "
+                        f"{float(background['sample_over_background']):.2f}",
+                        *(
+                            [f"background last/first ratio {float(trend):.2f}"]
+                            if trend is not None
+                            else []
+                        ),
+                        background["limitation"],
+                    ],
                     "exclude_from_analyte_assignment": True,
                 }
             )
@@ -970,7 +1279,6 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
             )
 
         if not interpretations and not validated_candidates:
-            authored_formula = peak.get("formula") or peak.get("suggested_formula")
             if authored_formula:
                 interpretations.append(
                     {
@@ -1298,15 +1606,15 @@ def optimal_identity_assignments(peaks, options):
 
 
 def _is_noise_artifact(flags):
-    """True if a peak's likely_artifact flags mark it as instrument NOISE — a ringing
-    comb, a low-prominence ripple/shoulder, a tail, or the reagent saturation-region
-    skirt. These are never analytes and are dropped from the default `peaks` menu and
-    the --auto-peaks panel. A plain reagent/cluster diagnostic ion is NOT noise: it is
-    a real ion, kept but labelled, so it stays visible."""
+    """True if peak evidence supports instrument noise rather than a mass-only hint.
+
+    Calibrated ringing, low-prominence ripples and the formula-free primary-ion skirt
+    are dropped. A possible high-side shoulder and a plain reagent/cluster role remain
+    visible until independent evidence supports exclusion.
+    """
     return any(
         ("ringing" in x)
         or ("low prominence" in x)
-        or ("tail" in x)
         or ("saturation region" in x)
         for x in (flags or [])
     )
@@ -1358,6 +1666,8 @@ def _compact_peak(e):
         }
     if "likely_artifact" in e:
         out["likely_artifact"] = e["likely_artifact"]
+    if "artifact_evidence" in e:
+        out["artifact_evidence"] = e["artifact_evidence"]
     if "interpretation_candidates" in e:
         out["interpretation_candidates"] = e["interpretation_candidates"]
     if "fragmentation_links" in e:
@@ -1424,6 +1734,25 @@ def cmd_peaks(args):
     # list straight into a config can't ship a noise comb; reagent/cluster diagnostic
     # ions stay (labelled). --include-artifacts shows the raw list with every flag.
     include_art = getattr(args, "include_artifacts", False)
+    ringing_statuses = [
+        peak["artifact_evidence"]["status"]
+        for peak in peaks
+        if peak.get("artifact_evidence", {}).get("model")
+        == "calibrated-timebin-ringing-v1"
+    ]
+    artifact_diagnostics = {
+        "model": "calibrated-timebin-ringing-v1",
+        "likely": ringing_statuses.count("likely"),
+        "supporting_only": ringing_statuses.count("supporting"),
+        "decision": (
+            "likely requires a repeated calibrated-timebin delay across several "
+            "parent peaks plus parent/satellite level and change co-variation"
+        ),
+        "limitation": (
+            "formula absence, low mass, or a shared sample pattern alone never marks "
+            "a detector artefact"
+        ),
+    }
     n_noise = sum(1 for p in peaks if _is_noise_artifact(p.get("likely_artifact")))
     if not include_art:
         peaks = [p for p in peaks if not _is_noise_artifact(p.get("likely_artifact"))]
@@ -1493,8 +1822,9 @@ def cmd_peaks(args):
         (
             f" This list is ALREADY cleaned: {n_noise} instrument-noise peaks (ringing "
             "combs, low-prominence ripples, reagent saturation-region skirt) were "
-            "dropped — pass --include-artifacts to see them. Any peak here is safe "
-            "to quantify."
+            "dropped — pass --include-artifacts to see them. Retained shoulder hints, "
+            "overlaps and broad formula proposals still require expert review before "
+            "quantification."
         )
         if (n_noise and not include_art)
         else ""
@@ -1521,6 +1851,7 @@ def cmd_peaks(args):
             "n_provisional_only": n_with_formula_proposals - n_mass_validated,
             "n_without_formula_proposals": len(peaks) - n_with_formula_proposals,
             "candidate_coverage": candidate_coverage,
+            "artifact_diagnostics": artifact_diagnostics,
             "n_ambiguous": n_amb,
             "n_overlapping": n_ovl,
             "n_window_overlap_pairs": len(dup_pairs),

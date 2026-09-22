@@ -177,6 +177,11 @@ def test_coverage_categories_partition_the_peak_count():
             ]
         },
         {"interpretation_candidates": [{"kind": "reagent"}]},
+        {
+            "interpretation_candidates": [
+                {"kind": "authored", "formula": "C7H14"}
+            ]
+        },
         {"interpretation_candidates": [{"kind": "unresolved"}]},
     ]
 
@@ -187,7 +192,8 @@ def test_coverage_categories_partition_the_peak_count():
     assert summary["detected_peaks"] == len(peaks)
     assert summary["total_components"] == len(peaks)
     assert sum(summary["categories"].values()) == len(peaks)
-    assert summary["candidate_coverage_percent"] == pytest.approx(60.0)
+    assert summary["candidate_coverage_percent"] == pytest.approx(50.0)
+    assert summary["categories"]["authored_assignment"] == 1
     assert summary["signal_weighted_candidate_coverage_percent"] is None
     assert summary["signal_weight_source"].endswith("status is missing")
 

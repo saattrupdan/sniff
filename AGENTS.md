@@ -43,6 +43,9 @@ agent-facing contracts; `README.md` and the CLI remain the user documentation.
   diagnostic. Channels stronger in backgrounds (S/B below 1) or with an upward
   background trend are background or contamination: relabel or drop them rather than
   shipping them as analytes.
+- **Detector echoes:** classify ringing only from a repeated delay in calibrated
+  detector time bins plus parent/satellite temporal evidence. Formula absence, low m/z,
+  equal m/z spacing, or shared sample timing alone is not artefact evidence.
 - **Range labels:** preserve chronological, deterministic labels: `sample_01`,
   `sample_02`, and `background_01`, `background_02`, numbered independently. Do not
   ask users to name automatically detected plateaus.

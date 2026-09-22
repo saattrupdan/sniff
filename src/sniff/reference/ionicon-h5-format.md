@@ -166,6 +166,18 @@ factor and is not silently adjusted.
 `Vₘ = 22.414 · (T_drift[K] / 273.15)` ≈ 28.9 L/mol at 80 °C. Verified: the
 CSV's µg/ppb ratio equals `M_neutral/28.90` across all masses to <0.1 %.
 
+## Detector echo diagnostics
+
+A genuine fixed-delay electronic echo is regular in detector time bins, not in m/z.
+Sniff therefore converts candidate parent/satellite apexes through the accepted Mapping
+calibration and learns delay modes only when the same delay recurs behind several tall,
+high-prominence parents. A candidate echo must have no formula or alternative-ion
+proposal, have a parent at least twice as tall, and match one of those run-specific delay
+modes. It is removed from the default panel only when parent and satellite extracted
+traces also pass level and cycle-change correlation thresholds. Mass coincidence,
+formula absence, low m/z and correlation alone remain supporting evidence rather than an
+artefact decision; `--include-artifacts` retains every channel and its diagnostics.
+
 ## Overlapping peaks (isobaric interference)
 
 The central difficulty of PTR-TOF. A window wide enough for accurate area on isolated

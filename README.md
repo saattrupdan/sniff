@@ -400,7 +400,11 @@ visible, explicitly provisional reviewer hypotheses. If the calibration residual
 of manufacturing confidence. Files with fewer than three references retain 200 ppm
 review proposals but Sniff does not assign them automatically. Internal-reference
 movement across cycle blocks is reported separately as temporal stability; it is not
-treated as mass-accuracy evidence.
+treated as mass-accuracy evidence. Reagent roles have a separate, role-only safeguard
+for saturated or displaced centroids: three consistent exact-marker anchors can establish
+a small run marker displacement, after which another known reagent marker must agree
+within 12 mDa and remain within 25 mDa of its tabulated position. This never moves the
+mass axis, changes a formula residual, or widens formula assignment.
 
 When the file records H₃O⁺ reagent mode and E/N, Sniff also tests individual PTR Library
 fragmentation profiles measured within 20 Td of the run median. A profile contributes
@@ -428,14 +432,24 @@ compound.
 that the physical-resolution diagnostic marks as unresolved neighbours count once,
 preventing overlapping maxima from inflating the denominator. Its categories partition
 those components into direct protonated formulas, alternative-ion formulas, inherited
-parent candidates, non-compound interpretations and unresolved channels. Formula/link,
+parent candidates, preserved authored assignments, non-compound interpretations and
+unresolved channels. Authored assignments outside the current mass-supported candidate
+set remain visible but do not increase chemical candidate coverage. Formula/link,
 named-compound and signal-weighted coverage are shown; the signal metric uses each
 component's strongest mean extracted Raw trace once and becomes unavailable if any
 component has no separable Raw trace. The metric counts proposals, not
 unique identities or calibrated confidence, and detector artefacts removed by the
-existing peak-shape safeguards are reported separately. The selected versioned
-`ion_role` and its evidence round-trip through saved reviews; moving a peak invalidates
-that automatic role rather than preserving stale evidence.
+existing peak-shape safeguards are reported separately. High-prominence ringing that
+survives local peak-shape checks is removed only when its delay in calibrated time-bin
+space recurs behind several taller parent peaks and its extracted trace passes separate
+level and cycle-change co-variation gates. `artifact_diagnostics` reports likely and
+supporting-only counts; formula absence, low m/z, equal mass spacing, or shared sample
+timing alone cannot classify an artefact. Once curated sample and background ranges are
+available, a formula-free channel with finite evidence in every interval is separately
+marked background-like when mean sample/background Raw is below 0.9; this does not
+identify the ion, suppress a validated formula, or call it a detector artefact. The
+selected versioned `ion_role` and its evidence round-trip through saved reviews; moving a peak invalidates that automatic role
+rather than preserving stale evidence.
 
 By default `analyze` integrates each interval with each isolated peak's apex/window
 **re-centred on that interval's own spectrum** — peaks drift between intervals (a

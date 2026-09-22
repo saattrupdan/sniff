@@ -595,22 +595,39 @@ def build_viz_data(
         overlap = None
         nb = nearest_other(m)
         if nb is not None:
-            sep = abs(nb - m)
-            if sep < m / R_phys * 1.5:
+            neighbour_apex = float(apexes.get(nb, nb))
+            sep = abs(neighbour_apex - apex)
+            if sep < apex / R_phys * 1.5:
                 overlap = {
-                    "neighbor": round(nb, 4),
+                    "neighbor": round(neighbour_apex, 4),
                     "sep_mDa": round(sep * 1000, 1),
                     "level": "unresolved",
                 }
             elif sep < 0.20:
                 overlap = {
-                    "neighbor": round(nb, 4),
+                    "neighbor": round(neighbour_apex, 4),
                     "sep_mDa": round(sep * 1000, 1),
                     "level": "deconvolved",
                 }
         trace_values = np.asarray(raw_traces[m], dtype=np.float64)
         finite_trace = trace_values[np.isfinite(trace_values)]
         abundance = float(np.mean(finite_trace)) if finite_trace.size else None
+        apex_bin = min(
+            len(avg) - 1,
+            max(0, int(round(float(mass_axis.m_to_tb(apex))))),
+        )
+        peak_height = float(avg[apex_bin])
+        prominence_width = max(
+            2,
+            round(a * np.sqrt(apex) / (2.0 * R_phys)),
+        )
+        prominence_lo = max(0, apex_bin - prominence_width)
+        prominence_hi = min(len(avg), apex_bin + prominence_width + 1)
+        prominence_base = max(
+            float(avg[prominence_lo : apex_bin + 1].min()),
+            float(avg[apex_bin:prominence_hi].min()),
+        )
+        peak_prominence = peak_height - prominence_base
         name = formula_id.identity_label(p.get("label"), p.get("formula"))
         fit_info = next(
             (
@@ -633,6 +650,8 @@ def build_viz_data(
                 # measure while retaining the trace's exact window/deconvolution
                 # semantics.
                 "abundance": (None if abundance is None else round(abundance, 5)),
+                "height": round(peak_height, 1),
+                "prominence": round(peak_prominence, 1),
                 "role_signal": (None if abundance is None else round(abundance, 6)),
                 "role_trace_status": (
                     "unresolved"
@@ -717,9 +736,16 @@ def build_viz_data(
         traces=role_traces,
         drift=drift,
     )
-    from .analyze import interpret_peak_roles
+    from .analyze import (
+        _annotate_timebin_ringing,
+        apply_background_evidence,
+        interpret_peak_roles,
+    )
 
+    _annotate_timebin_ringing(peaks, role_traces, mass_axis)
+    apply_background_evidence(peaks, role_traces, ranges)
     interpret_peak_roles(peaks, drift=drift, R_phys=R_phys)
+    candidate_coverage = ion_roles.coverage_summary(peaks)
     if assign_identity_defaults:
         _apply_refined_identity_defaults(peaks, peaks_cfg)
     _say(1.0)
@@ -813,6 +839,7 @@ def build_viz_data(
         "spectrum": [round(x) for x in avg],
         "peaks": peaks,
         "ranges": ranges,
+        "candidate_coverage": candidate_coverage,
         "rate_constants": [
             {
                 "name": c["name"],

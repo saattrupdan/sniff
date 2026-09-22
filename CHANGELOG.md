@@ -53,6 +53,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   channels and detector artefacts are excluded from automatic analyte assignment;
   unmatched channels are labelled as unresolved ions rather than being given fabricated
   compounds.
+- Peak discovery now detects high-prominence detector echoes that evade local noise
+  rules. Classification requires a delay recurring behind several taller peaks in
+  calibrated time-bin space plus parent/satellite level and cycle-change co-variation;
+  supporting-only evidence remains visible and no formula-bearing peak is suppressed.
+  Curated reviews also expose complete-range sample/background evidence as a separate
+  non-compound role without changing chemical assignments.
 - PTR Library source rows now retain product-ion masses, branching percentages, E/N,
   instrument and citation provenance. Under compatible measured reaction conditions,
   parent/fragment level and change co-variation can rerank existing formula proposals
@@ -77,13 +83,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   assigned automatically; poor calibration leaves every result as a proposal rather than
   widening the scientific acceptance boundary.
 - Fresh app reviews now fill remaining identity blanks after trace extraction refines
-  the measured peak apex. Reagent markers claim only their nearest peak within 12 mDa.
-  The former vague m/z 30.994 O₂⁺/NO⁺ region label is now the specific NO⁺ (¹⁵N)
-  isotope, preventing nearby formaldehyde and reagent-region satellites from receiving
-  misleading reagent labels.
-- New app-generated configs use analysis schema 2 with `empirical-v1` fitting and
-  `formula-v1` isotope handling. Legacy configs retain their previous Gaussian and
-  isotope-off arithmetic, and both models remain explicit rollback settings.
+  the measured peak apex. Reagent markers first use the strict 12 mDa window; three
+  consistent marker anchors may then recover another known reagent channel with the
+  same small centroid displacement without moving the mass axis or relaxing formula
+  tolerances. The former vague m/z 30.994 O₂⁺/NO⁺ region label is now the specific NO⁺
+  (¹⁵N) isotope, preventing nearby formaldehyde and reagent-region satellites from
+  receiving misleading reagent labels.
+- New app-generated configs use analysis schema 3 with `empirical-v1` fitting and joint
+  `formula-envelope-v2` isotope handling. Schema-2 configs retain `formula-v1`, and
+  legacy configs retain their previous Gaussian and isotope-off arithmetic.
 
 ## [0.8.0] - 2026-09-12
 
