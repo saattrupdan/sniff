@@ -184,5 +184,100 @@ def test_coverage_categories_partition_the_peak_count():
 
     assert summary["with_formula_or_linked_candidate"] == 3
     assert summary["with_named_compound_candidate"] == 2
+    assert summary["detected_peaks"] == len(peaks)
+    assert summary["total_components"] == len(peaks)
     assert sum(summary["categories"].values()) == len(peaks)
     assert summary["candidate_coverage_percent"] == pytest.approx(60.0)
+    assert summary["signal_weighted_candidate_coverage_percent"] is None
+    assert summary["signal_weight_source"].endswith("status is missing")
+
+
+def test_signal_weighted_coverage_is_unavailable_for_withheld_component():
+    peaks = [
+        {
+            "mz": 50.0,
+            "role_signal": None,
+            "role_trace_status": "unresolved",
+            "interpretation_candidates": [{"kind": "unresolved-overlap"}],
+        }
+    ]
+
+    summary = ion_roles.coverage_summary(peaks)
+
+    assert summary["signal_weighted_candidate_coverage_percent"] is None
+    assert summary["signal_weight_source"].startswith("unavailable")
+    assert summary["categories"]["unknown"] == 1
+    assert summary["categories"]["interpreted_noncompound"] == 0
+
+
+@pytest.mark.parametrize("signal", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_signal_makes_weighted_coverage_unavailable(signal):
+    summary = ion_roles.coverage_summary(
+        [
+            {
+                "mz": 50.0,
+                "role_signal": signal,
+                "role_trace_status": "available",
+                "candidates": [{"formula": "CH2O"}],
+            }
+        ]
+    )
+
+    assert summary["signal_weighted_candidate_coverage_percent"] is None
+    assert summary["signal_weight_source"].startswith("unavailable")
+
+
+def test_mixed_finite_and_nonfinite_component_withholds_weighted_coverage():
+    peaks = [
+        {
+            "mz": 50.0,
+            "role_signal": 10.0,
+            "role_trace_status": "available",
+            "candidates": [{"formula": "CH2O"}],
+            "overlap": {"level": "unresolved", "neighbor": 50.01},
+        },
+        {
+            "mz": 50.01,
+            "role_signal": float("nan"),
+            "role_trace_status": "available",
+            "overlap": {"level": "unresolved", "neighbor": 50.0},
+        },
+    ]
+
+    summary = ion_roles.coverage_summary(peaks)
+
+    assert summary["total_components"] == 1
+    assert summary["signal_weighted_candidate_coverage_percent"] is None
+    assert summary["signal_weight_source"].startswith("unavailable")
+
+
+def test_coverage_collapses_unresolved_neighbours_and_weights_once():
+    peaks = [
+        {
+            "mz": 50.0,
+            "height": 100.0,                "role_signal": 80.0,
+                "role_trace_status": "available",
+                "candidates": [{"formula": "C3H13"}],
+            "overlap": {"level": "unresolved", "neighbor": 50.015},
+        },
+        {
+            "mz": 50.015,
+            "height": 90.0,                "role_signal": 70.0,
+                "role_trace_status": "available",
+                "overlap": {"level": "unresolved", "neighbor": 50.0},
+        },
+        {
+            "mz": 75.0,
+            "height": 20.0,                "role_signal": 20.0,
+                "role_trace_status": "available",
+                "interpretation_candidates": [{"kind": "unresolved"}],
+        },
+    ]
+
+    summary = ion_roles.coverage_summary(peaks)
+
+    assert summary["detected_peaks"] == 3
+    assert summary["total_components"] == 2
+    assert summary["with_formula_or_linked_candidate"] == 1
+    assert summary["candidate_coverage_percent"] == pytest.approx(50.0)
+    assert summary["signal_weighted_candidate_coverage_percent"] == pytest.approx(80.0)

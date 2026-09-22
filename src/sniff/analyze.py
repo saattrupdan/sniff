@@ -680,6 +680,14 @@ def apply_run_fragmentation_evidence(
         should_stop=should_stop,
     )
     trace_map = {mass: traces[mass][0] for mass in masses}
+    for peak in peaks:
+        trace = np.asarray(trace_map[float(peak["mz"])], dtype=np.float64)
+        finite = trace[np.isfinite(trace)]
+        peak["role_signal"] = round(
+            max(0.0, float(np.mean(finite))) if finite.size else 0.0,
+            6,
+        )
+        peak["role_trace_status"] = "available" if finite.size else "unresolved"
     fragmentation.apply_fragmentation_evidence(
         peaks,
         trace_map,
@@ -902,6 +910,25 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
         if (
             not interpretations
             and not validated_candidates
+            and peak.get("role_trace_status") == "unresolved"
+            and peak.get("overlap")
+        ):
+            interpretations.append(
+                {
+                    "kind": "unresolved-overlap",
+                    "label": f"unresolved overlapping ion at m/z {masses[index]:.4f}",
+                    "source": "numerical peak-separation diagnostic",
+                    "evidence": [
+                        "the overlapping peak design is numerically inseparable",
+                        "independent trace evidence and concentration are withheld",
+                    ],
+                    "exclude_from_analyte_assignment": True,
+                }
+            )
+
+        if (
+            not interpretations
+            and not validated_candidates
             and peak.get("ion_candidates")
         ):
             candidate = peak["ion_candidates"][0]
@@ -991,8 +1018,42 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0):
                 )
         if interpretations:
             peak["interpretation_candidates"] = interpretations
+            selected = interpretations[0]
+            peak["ion_role"] = {
+                "model": "ion-role-v1",
+                "kind": selected["kind"],
+                "status": (
+                    "unresolved"
+                    if selected["kind"].startswith("unresolved")
+                    else "proposal"
+                    if selected["kind"] == "alternative-ion"
+                    else "supported"
+                ),
+                "label": selected["label"],
+                "source": selected.get("source"),
+                "evidence": list(selected.get("evidence") or []),
+                "exclude_from_analyte_assignment": bool(
+                    selected.get("exclude_from_analyte_assignment")
+                ),
+                **(
+                    {"related_mz": selected["related_mz"]}
+                    if selected.get("related_mz") is not None
+                    else {}
+                ),
+                **(
+                    {"candidate_formulas": selected["candidate_formulas"]}
+                    if selected.get("candidate_formulas")
+                    else {}
+                ),
+                **(
+                    {"compound_candidates": selected["compound_candidates"]}
+                    if selected.get("compound_candidates")
+                    else {}
+                ),
+            }
         else:
             peak.pop("interpretation_candidates", None)
+            peak.pop("ion_role", None)
     return peaks
 
 
@@ -1258,6 +1319,8 @@ def _compact_peak(e):
         "prominence": e.get("prominence"),
         "neutral_mass": e.get("neutral_mass"),
         "formula_tolerance": e.get("formula_tolerance"),
+        "role_trace_status": e.get("role_trace_status"),
+        "role_signal": e.get("role_signal"),
         "suggested_label": e.get("suggested_label"),
     }
     if e.get("suggested_formula"):
@@ -1295,6 +1358,8 @@ def _compact_peak(e):
         out["fragmentation_links"] = e["fragmentation_links"]
     if "ion_candidates" in e:
         out["ion_candidates"] = e["ion_candidates"]
+    if "ion_role" in e:
+        out["ion_role"] = e["ion_role"]
     return out
 
 

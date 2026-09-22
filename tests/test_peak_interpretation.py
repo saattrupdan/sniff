@@ -3,6 +3,7 @@ from pathlib import Path
 from sniff import formula_id
 from sniff.analyze import (
     _assign_suggested_identities,
+    _compact_peak,
     annotate_peaks,
     interpret_peak_roles,
 )
@@ -17,6 +18,8 @@ def test_known_reagent_gets_non_analyte_interpretation():
     assert interpretation["kind"] == "reagent"
     assert interpretation["label"] == "NO+"
     assert interpretation["exclude_from_analyte_assignment"] is True
+    assert peaks[0]["ion_role"]["model"] == "ion-role-v1"
+    assert peaks[0]["ion_role"]["status"] == "supported"
 
 
 def test_isobaric_water_cluster_does_not_suppress_valid_analyte_candidate():
@@ -130,6 +133,22 @@ def test_supported_fragment_link_is_an_interpretation_not_an_identity():
     assert interpretation["compound_candidates"] == ["second ketone", "test ketone"]
 
 
+def test_numerically_inseparable_overlap_gets_structured_role():
+    peak = {
+        "mz": 57.5,
+        "height": 100.0,
+        "candidates": [],
+        "role_trace_status": "unresolved",
+        "overlap": {"level": "unresolved", "neighbor": 57.53},
+    }
+
+    interpret_peak_roles([peak])
+
+    assert peak["ion_role"]["kind"] == "unresolved-overlap"
+    assert peak["ion_role"]["status"] == "unresolved"
+    assert peak["ion_role"]["exclude_from_analyte_assignment"] is True
+
+
 def test_peak_without_formula_candidate_gets_explicit_unresolved_interpretation():
     peak = {
         "mz": 41.0541,
@@ -204,7 +223,21 @@ def test_alternative_ion_candidate_is_visible_but_not_auto_assignable():
     assert interpretation["kind"] == "alternative-ion"
     assert interpretation["candidate_formulas"] == ["C2H6O"]
     assert interpretation["compound_candidates"] == ["ethanol"]
+    assert peak["ion_role"]["status"] == "proposal"
     assert interpretation["exclude_from_analyte_assignment"] is True
+
+
+def test_compact_peak_retains_role_trace_availability():
+    compact = _compact_peak(
+        {
+            "mz": 50.0,
+            "role_trace_status": "unresolved",
+            "role_signal": 0.0,
+        }
+    )
+
+    assert compact["role_trace_status"] == "unresolved"
+    assert compact["role_signal"] == 0.0
 
 
 def test_ptr_fixture_has_candidate_or_interpretation_for_every_peak():

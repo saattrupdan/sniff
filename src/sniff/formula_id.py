@@ -127,8 +127,22 @@ MONO = {
     "F": 18.99840322,
     "Cl": 34.96885271,
     "Br": 78.9183376,
+    "Si": 27.97692653465,
+    "I": 126.9044719,
 }
-VALENCE = {"C": 4, "H": 1, "N": 3, "O": 2, "S": 2, "P": 3, "F": 1, "Cl": 1, "Br": 1}
+VALENCE = {
+    "C": 4,
+    "H": 1,
+    "N": 3,
+    "O": 2,
+    "S": 2,
+    "P": 3,
+    "F": 1,
+    "Cl": 1,
+    "Br": 1,
+    "Si": 4,
+    "I": 1,
+}
 # isotopes as {element: [(nucleon_shift, abundance), ...]} (truncated to +2)
 ISO = {
     "C": [(0, 0.9893), (1, 0.0107)],
@@ -140,15 +154,29 @@ ISO = {
     "F": [(0, 1.0)],
     "Cl": [(0, 0.7576), (2, 0.2424)],
     "Br": [(0, 0.5069), (2, 0.4931)],
+    "Si": [(0, 0.92223), (1, 0.04685), (2, 0.03092)],
+    "I": [(0, 1.0)],
 }
 # 13C-12C spacing; M+2 contributors (34S/37Cl/18O/2x13C) cluster near +2.004
 DM1 = 1.003355
 DM2 = 2.005
 CONTEXT_PRIOR_FACTOR = 2.0
+MAX_ENUMERATED_NEUTRAL_MASS = 250.0
 _COMPOUND_CATALOGUE = None
 
 # default element bounds for breath / ambient VOCs (halogens allowed but rare)
-DEFAULT_BOUNDS = {"C": 40, "N": 8, "O": 20, "S": 4, "P": 2, "Cl": 4, "Br": 2, "F": 6}
+DEFAULT_BOUNDS = {
+    "C": 40,
+    "N": 8,
+    "O": 20,
+    "S": 4,
+    "P": 2,
+    "Cl": 4,
+    "Br": 2,
+    "F": 6,
+    "Si": 4,
+    "I": 2,
+}
 
 
 def formula_mass(counts):
@@ -175,8 +203,14 @@ def dbe(counts):
     n = counts.get("N", 0)
     p = counts.get("P", 0)
     h = counts.get("H", 0)
-    x = counts.get("F", 0) + counts.get("Cl", 0) + counts.get("Br", 0)
-    return 1 + c + (n + p) / 2.0 - (h + x) / 2.0
+    x = (
+        counts.get("F", 0)
+        + counts.get("Cl", 0)
+        + counts.get("Br", 0)
+        + counts.get("I", 0)
+    )
+    si = counts.get("Si", 0)
+    return 1 + c + si + (n + p) / 2.0 - (h + x) / 2.0
 
 
 def _plausible(counts):
@@ -242,7 +276,18 @@ def enumerate_formulas(neutral_mass, tol_da, elements=None, bounds=None):
     H is solved from the mass residual (not looped); the heavy elements are
     enumerated with mass pruning so this stays fast (a few ms per peak)."""
     bounds = dict(DEFAULT_BOUNDS if bounds is None else bounds)
-    elements = elements or ["C", "N", "O", "S", "P", "Cl", "Br", "F"]
+    elements = elements or [
+        "I",
+        "Br",
+        "Cl",
+        "Si",
+        "S",
+        "P",
+        "F",
+        "O",
+        "N",
+        "C",
+    ]
     mH = MONO["H"]
     hi = neutral_mass + tol_da
     out = []
@@ -389,7 +434,7 @@ def score_peak(
         raise ValueError("formula mass score sigma must be finite and positive")
     cands = (
         enumerate_formulas(neutral, tol, elements=elements)
-        if enumerate_candidates
+        if enumerate_candidates and neutral <= MAX_ENUMERATED_NEUTRAL_MASS
         else []
     )
     external_formulas = set()

@@ -22,8 +22,15 @@ class IsotopeModelTest(unittest.TestCase):
 
         self.assertGreater(model["channels"][1]["ratio"], 0.30)
 
+    def test_silicon_and_iodine_have_versioned_isotope_models(self):
+        silicon = isotopes.formula_isotope_model("C2H6OSi")
+        iodine = isotopes.formula_isotope_model("C6H5I")
+
+        self.assertGreater(silicon["channels"][0]["ratio"], 0.04)
+        self.assertEqual(iodine["version"], isotopes.MODEL_VERSION)
+
     def test_formula_parser_rejects_unsupported_or_malformed_values(self):
-        for formula in ("", "C2H5+", "C0H2", "SiH4"):
+        for formula in ("", "C2H5+", "C0H2", "XeH4"):
             with self.subTest(formula=formula):
                 with self.assertRaises(ValueError):
                     isotopes.parse_formula(formula)

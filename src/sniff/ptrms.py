@@ -1862,7 +1862,31 @@ def _cluster_design(
     x = np.arange(tlo, thi)
     # design matrix G (n_tb x K), unit-height Gaussians
     G = np.exp(-0.5 * ((x[:, None] - centers_tb[None, :]) / sig_tb[None, :]) ** 2)
-    P = G @ np.linalg.inv(G.T @ G)  # n_tb x K : A = Y @ P
+    # An unregularised inverse squares the condition number and overflows for dense,
+    # nearly unresolved groups. Reject inseparable columns before regularisation;
+    # otherwise a ridge can make a rank-deficient design look like a plausible split.
+    singular = np.linalg.svd(G, compute_uv=False)
+    cutoff = singular[0] * 1e-8 if singular.size and singular[0] > 0 else np.inf
+    rank = int(np.count_nonzero(singular > cutoff))
+    condition = (
+        float(singular[0] / singular[-1])
+        if singular.size and singular[-1] > 0
+        else np.inf
+    )
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        gram = G.T @ G
+    if (
+        rank == len(centers_m)
+        and condition <= 1e8
+        and np.isfinite(gram).all()
+    ):
+        ridge = max(
+            float(np.trace(gram)) / max(len(centers_m), 1) * 1e-8,
+            1e-12,
+        )
+        P = np.linalg.solve(gram + ridge * np.eye(len(centers_m)), G.T).T
+    else:
+        P = np.full_like(G, np.nan)
     # normalisation: window-sum of each peak's own unit Gaussian (matches isolated)
     norm = np.zeros(len(centers_m))
     for k, m in enumerate(centers_m):
@@ -2123,13 +2147,20 @@ def extract_traces(
                 nbin=nbin,
                 mass_axis=mass_axis,
             )
-            design = {"method": "gaussian-v1", "design": gaussian}
+            if np.isfinite(gaussian[2]).all():
+                design = {"method": "gaussian-v1", "design": gaussian}
+                status = "legacy"
+                reason = "legacy model selected"
+            else:
+                design = {"method": "unresolved"}
+                status = "unresolved"
+                reason = "Gaussian components are rank-deficient or ill-conditioned"
             cluster_reports.append(
                 {
                     "masses": [float(m) for m in g],
                     "method": "gaussian-v1",
-                    "status": "legacy",
-                    "reason": "legacy model selected",
+                    "status": status,
+                    "reason": reason,
                 }
             )
         cluster_design.append(design)
@@ -2173,9 +2204,12 @@ def extract_traces(
                 cluster_buf[ci][i:j, :] = np.nan
             else:
                 tlo, thi, projection, norm = design["design"]
-                amplitudes = chunk[:, tlo:thi] @ projection
+                with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                    amplitudes = chunk[:, tlo:thi] @ projection
+                    amplitudes *= norm[None, :]
+                amplitudes[~np.isfinite(amplitudes)] = np.nan
                 np.clip(amplitudes, 0, None, out=amplitudes)
-                cluster_buf[ci][i:j, :] = amplitudes * norm[None, :]
+                cluster_buf[ci][i:j, :] = amplitudes
         for lbl, (lo, hi) in want_ranges.items():  # cycles are 1-based inclusive
             c0, c1 = max(i, lo - 1), min(j, hi)
             if c1 > c0:

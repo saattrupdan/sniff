@@ -89,6 +89,30 @@ class EmpiricalExtractionTest(unittest.TestCase):
             self.assertTrue(np.isnan(fallback_traces[masses[3]][0]).all())
 
 
+def test_gaussian_design_with_duplicate_centres_is_withheld():
+    _lo, _hi, projection, _norm = ptrms._cluster_design(
+        [59.049, 59.049],
+        1000.0,
+        0.0,
+        nbin=10000,
+        mass_axis=identity_mass_axis(a=1000.0, b=0.0),
+    )
+
+    assert np.isnan(projection).all()
+
+
+def test_gaussian_design_with_resolved_centres_stays_finite():
+    _lo, _hi, projection, _norm = ptrms._cluster_design(
+        [59.049, 59.149],
+        1000.0,
+        0.0,
+        nbin=10000,
+        mass_axis=identity_mass_axis(a=1000.0, b=0.0),
+    )
+
+    assert np.isfinite(projection).all()
+
+
 class IsotopeQuantificationTest(unittest.TestCase):
     def test_auxiliary_channels_do_not_create_rows(self):
         source = {"mz": 59.0, "formula": "C3H6O"}

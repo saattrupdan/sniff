@@ -215,6 +215,7 @@ def preview_peak(f, lo, hi, R=1200.0, *, mass_axis=None, compounds_of_interest=N
         "candidates": candidates,
         "formula_tolerance": preview["formula_tolerance"],
         "interpretation_candidates": preview.get("interpretation_candidates", []),
+        "ion_role": preview.get("ion_role"),
     }
 
 
@@ -627,6 +628,14 @@ def build_viz_data(
                 # measure while retaining the trace's exact window/deconvolution
                 # semantics.
                 "abundance": (None if abundance is None else round(abundance, 5)),
+                "role_signal": (None if abundance is None else round(abundance, 6)),
+                "role_trace_status": (
+                    "unresolved"
+                    if fit_info and fit_info.get("status") == "unresolved"
+                    else "available"
+                    if finite_trace.size
+                    else "unresolved"
+                ),
                 "label": name or f"m{m:.3f}",
                 # a name the tool made up for drawing, never an assignment: the save
                 # path drops it again so an untouched peak stays unnamed in the file
@@ -1901,6 +1910,7 @@ async function hydratePeakPreview(p,lo,hi){ if(!SERVED)return;
     p.label='unknown m/z '+p.apex.toFixed(3); p.labelAuto=p.label;
     p.candidates=data.candidates||[];
     p.interpretation_candidates=data.interpretation_candidates||[];
+    p.ion_role=data.ion_role||null;
     p.id_confidence=p.candidates.length?p.candidates[0].probability:null;
     p.id_ambiguous=!!(p.candidates.length&&(p.candidates[0].probability<.6||
       (p.candidates.length>1&&p.candidates[0].probability-p.candidates[1].probability<.2)));
@@ -2360,6 +2370,7 @@ plotC.addEventListener("dblclick",e=>{ if(tab!=="spec") return; const p=selPeak(
       winL:hw,winR:hw,_winL0:hw,_winR0:hw,winManual:false,use:true,samples:sampleLabels()};
     peaks.push(added);selId=added.id;renderPeaks();hydratePeakPreview(added,lo,hi);return;}
   pushUndo(); p.apex=+specMzAtX(e.offsetX).toFixed(4);
+  delete p.ion_role; p.interpretation_candidates=[]; p.ion_candidates=[];
   if(!p.winManual){ const hw=p.apex/(2*cfg.R); p.winL=hw; p.winR=hw; } renderPeaks(); redraw(); });
 plotC.addEventListener("wheel",e=>{ e.preventDefault(); anim=null; const v=view();
   // horizontal scroll (trackpad two-finger sideways, or Shift+wheel) pans; vertical wheel zooms
@@ -2816,6 +2827,8 @@ function buildConfig(){
     if(p.identification_provenance)
       o.identification_provenance={...p.identification_provenance};
     else delete o.identification_provenance;
+    if(p.ion_role)o.ion_role={...(((p._config_original||{}).ion_role)||{}),...p.ion_role};
+    else delete o.ion_role;
     if(p.k!=null && p.k!==""){o.k=p.k; o.k_estimated=!!p.k_estimated;}
     else { delete o.k; delete o.k_estimated; }
     const k=sampleLabels(), sel=selectedSamples(p);   // all samples is the implicit default, as in older configs

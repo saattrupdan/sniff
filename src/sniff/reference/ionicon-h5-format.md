@@ -114,8 +114,12 @@ charge transfer or hydride abstraction when matching reagent evidence exists, an
 or `z=3` only after two fractional-spacing isotope satellites co-vary with the parent.
 These alternatives retain the same ppm limits but are never assignment-eligible.
 Known isotope and fragment channels can carry their parent candidate list while remaining
-non-analyte channels. The reported candidate-coverage categories partition the cleaned
-peak list, excluding detector artefacts already rejected by peak-shape diagnostics.
+non-analyte channels. A versioned selected role preserves that evidence in the review
+config but is invalidated when its peak is moved. Candidate-coverage categories partition
+canonical components, merging neighbours that the physical-resolution diagnostic says
+are unresolved. Signal-weighted coverage uses the strongest mean Raw trace per component
+and is withheld if any component has no separable trace. Detector artefacts already
+rejected by peak-shape diagnostics remain outside the denominator.
 
 ## The four quantities
 

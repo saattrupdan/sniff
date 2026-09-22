@@ -69,6 +69,36 @@ def test_proposal_slots_survive_when_validated_candidate_limit_is_full():
     assert len(proposals) == 2
 
 
+def test_formula_enumeration_supports_siloxanes_and_iodinated_references():
+    assert formula_id.dbe({"Si": 1, "H": 4}) == 0
+    assert formula_id.dbe({"C": 6, "H": 18, "O": 1, "Si": 2}) == 0
+    assert formula_id.dbe({"C": 6, "H": 18, "O": 3, "Si": 3}) == 1
+    formulas = (
+        {"C": 2, "H": 6, "O": 1, "Si": 1},
+        {"C": 6, "H": 5, "I": 1},
+    )
+
+    for counts in formulas:
+        mass = formula_id.formula_mass(counts)
+        matches = formula_id.enumerate_formulas(mass, 1e-6)
+        assert formula_id.formula_str(counts) in {
+            formula_id.formula_str(candidate) for candidate, _mass in matches
+        }
+
+
+def test_high_mass_search_uses_catalogue_instead_of_unbounded_enumeration(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise AssertionError("high-mass local enumeration should be skipped")
+
+    monkeypatch.setattr(formula_id, "enumerate_formulas", fail)
+
+    assert formula_id.score_peak(
+        500.0,
+        1.0,
+        proposal_tolerance_ppm=200.0,
+    ) == []
+
+
 def test_mapping_residuals_set_run_tolerance_and_degrade_above_limit():
     masses = np.array([21.0221, 203.9430, 330.8480], dtype=np.float64)
     a, b = 10000.0, -200.0

@@ -13,7 +13,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   proposals for condition-compatible hydration, water loss, charge transfer, hydride
   abstraction and evidence-backed multiply charged envelopes. Isotope and known-fragment
   channels inherit parent compound proposals without becoming automatic neutral-analyte
-  assignments.
+  assignments. Versioned selected roles persist through review, while canonical
+  unresolved-peak components and one-per-component Raw weighting prevent overlap from
+  inflating candidate coverage.
 - New analyses learn an empirical peak shape from clean isolated channels and use
   bounded, non-negative run/interval fits for overlapping groups. Rank, conditioning,
   correlation, residual and fallback diagnostics prevent unresolved components from
@@ -51,6 +53,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Formula enumeration and natural-isotope evidence now include silicon and iodine,
+  covering common siloxane backgrounds and iodinated reference ions without widening
+  either mass tolerance. Legacy Gaussian overlap projection now uses a guarded,
+  scale-relative regularisation and withholds non-finite components instead of emitting
+  overflow-driven traces.
 - Valid three-or-more-point `CALdata/Mapping` fits are now authoritative mass axes.
   Sniff no longer applies a second water-cluster/iodobenzene translation and scale that
   could move those references hundreds of ppm after a single-digit-ppm Mapping fit.

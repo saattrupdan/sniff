@@ -161,59 +161,152 @@ def candidate_summaries(peak):
 
 
 def coverage_summary(peaks):
-    """Return non-overlapping candidate/interpretation coverage counts."""
-    direct_formula = 0
-    alternative_formula = 0
-    inherited_formula = 0
+    """Return candidate coverage over canonical unresolved-peak components."""
+    category_order = (
+        "direct_protonated_formula",
+        "alternative_ion_formula",
+        "inherited_parent_candidate",
+        "interpreted_noncompound",
+        "unknown",
+    )
+    categories = {category: 0 for category in category_order}
     named_compound = 0
-    interpreted_noncompound = 0
-    unknown = 0
-    for peak in peaks:
-        direct = peak.get("candidates") or []
-        alternative = peak.get("ion_candidates") or []
-        interpretations = peak.get("interpretation_candidates") or []
-        inherited = any(item.get("candidate_formulas") for item in interpretations)
-        named = any(_candidate_names(candidate) for candidate in [*direct, *alternative])
-        named = named or any(
-            item.get("compound_candidates") for item in interpretations
-        )
-        if direct:
-            direct_formula += 1
-        elif alternative:
-            alternative_formula += 1
-        elif inherited:
-            inherited_formula += 1
-        elif any(item.get("kind") != "unresolved" for item in interpretations):
-            interpreted_noncompound += 1
+    candidate_weight = 0.0
+    total_weight = 0.0
+    measured_weighting = bool(peaks) and all(
+        "role_trace_status" in peak for peak in peaks
+    )
+    weighted_available = measured_weighting
+    components = _canonical_components(peaks)
+    for indexes in components:
+        component_peaks = [peaks[index] for index in indexes]
+        member_categories = [_peak_category(peak) for peak in component_peaks]
+        category = min(member_categories, key=category_order.index)
+        categories[category] += 1
+        named = any(_peak_has_name(peak) for peak in component_peaks)
+        named_compound += int(named)
+        valid_signals = []
+        component_signal_invalid = False
+        for peak in component_peaks:
+            if (
+                peak.get("role_trace_status") != "available"
+                or peak.get("role_signal") is None
+            ):
+                continue
+            signal = float(peak["role_signal"])
+            if math.isfinite(signal):
+                valid_signals.append(max(0.0, signal))
+            else:
+                component_signal_invalid = True
+        if measured_weighting:
+            if valid_signals and not component_signal_invalid:
+                weight = max(valid_signals)
+            else:
+                weighted_available = False
+                weight = 0.0
         else:
-            unknown += 1
-        if named:
-            named_compound += 1
-    total = len(peaks)
-    with_candidate = direct_formula + alternative_formula + inherited_formula
+            weight = 0.0
+        total_weight += weight
+        if category in category_order[:3]:
+            candidate_weight += weight
+    total_components = len(components)
+    with_candidate = sum(categories[category] for category in category_order[:3])
+    raw_with_candidate = sum(
+        _peak_category(peak) in category_order[:3] for peak in peaks
+    )
+    signal_source = (
+        "mean extracted Raw signal"
+        if measured_weighting and weighted_available
+        else "unavailable because at least one canonical component has no separable Raw trace"
+        if measured_weighting
+        else "unavailable because extracted Raw trace status is missing"
+    )
     return {
         "model": MODEL,
-        "total_peaks": total,
+        "denominator": "canonical unresolved-peak components",
+        "detected_peaks": len(peaks),
+        "total_components": total_components,
         "with_formula_or_linked_candidate": with_candidate,
-        "candidate_coverage_percent": round(100.0 * with_candidate / total, 1)
-        if total
+        "candidate_coverage_percent": round(
+            100.0 * with_candidate / total_components, 1
+        )
+        if total_components
         else 0.0,
         "with_named_compound_candidate": named_compound,
-        "named_compound_coverage_percent": round(100.0 * named_compound / total, 1)
-        if total
+        "named_compound_coverage_percent": round(
+            100.0 * named_compound / total_components, 1
+        )
+        if total_components
         else 0.0,
-        "categories": {
-            "direct_protonated_formula": direct_formula,
-            "alternative_ion_formula": alternative_formula,
-            "inherited_parent_candidate": inherited_formula,
-            "interpreted_noncompound": interpreted_noncompound,
-            "unknown": unknown,
-        },
+        "signal_weighted_candidate_coverage_percent": (
+            round(100.0 * candidate_weight / total_weight, 1)
+            if weighted_available and total_weight
+            else None
+        ),
+        "signal_weight_source": signal_source,
+        "peak_level_candidate_count": raw_with_candidate,
+        "categories": categories,
         "limitation": (
             "candidate coverage counts proposals, not unique identities or calibrated "
             "identification confidence"
         ),
     }
+
+
+def _peak_category(peak):
+    if peak.get("candidates"):
+        return "direct_protonated_formula"
+    if peak.get("ion_candidates"):
+        return "alternative_ion_formula"
+    interpretations = peak.get("interpretation_candidates") or []
+    if any(item.get("candidate_formulas") for item in interpretations):
+        return "inherited_parent_candidate"
+    if any(
+        not str(item.get("kind", "")).startswith("unresolved")
+        for item in interpretations
+    ):
+        return "interpreted_noncompound"
+    return "unknown"
+
+
+def _peak_has_name(peak):
+    candidates = [
+        *(peak.get("candidates") or []),
+        *(peak.get("ion_candidates") or []),
+    ]
+    return any(_candidate_names(candidate) for candidate in candidates) or any(
+        item.get("compound_candidates")
+        for item in peak.get("interpretation_candidates") or []
+    )
+
+
+def _canonical_components(peaks):
+    parents = list(range(len(peaks)))
+
+    def root(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def join(left, right):
+        left, right = root(left), root(right)
+        if left != right:
+            parents[right] = left
+
+    masses = [float(peak.get("apex", peak.get("mz", 0.0))) for peak in peaks]
+    for index, peak in enumerate(peaks):
+        overlap = peak.get("overlap") or {}
+        if overlap.get("level") != "unresolved" or overlap.get("neighbor") is None:
+            continue
+        neighbour = float(overlap["neighbor"])
+        other = min(range(len(peaks)), key=lambda item: abs(masses[item] - neighbour))
+        if other != index and abs(masses[other] - neighbour) <= 0.001:
+            join(index, other)
+    grouped = {}
+    for index in range(len(peaks)):
+        grouped.setdefault(root(index), []).append(index)
+    return list(grouped.values())
 
 
 def _candidates_for_hypothesis(
@@ -235,6 +328,19 @@ def _candidates_for_hypothesis(
     proposal_ppm = float(tolerance.get("proposal_ppm", 200.0))
     synthetic_mz = neutral_mass + formula_id.PROTON
     ppm_scale = observed_mz * charge / synthetic_mz
+    extra_formulas = []
+    if (
+        neutral_mass > formula_id.MAX_ENUMERATED_NEUTRAL_MASS
+        and hasattr(compound_catalogue, "formulas_in_mass_range")
+    ):
+        neutral_tolerance = observed_mz * charge * proposal_ppm / 1e6
+        extra_formulas = [
+            item["formula"]
+            for item in compound_catalogue.formulas_in_mass_range(
+                neutral_mass,
+                neutral_tolerance,
+            )
+        ]
     scored = formula_id.score_peak(
         synthetic_mz,
         1.0,
@@ -244,6 +350,7 @@ def _candidates_for_hypothesis(
             float(tolerance.get("score_sigma_ppm", 4.0)) * ppm_scale
         ),
         proposal_tolerance_ppm=proposal_ppm * ppm_scale,
+        extra_formulas=extra_formulas,
         max_candidates=max(250, max_candidates),
     )
     output = []

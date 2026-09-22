@@ -384,8 +384,10 @@ fallback, retain the legacy two-reference affine correction using 37.033 and 204
 both references must then be prominent, unambiguous and persistent. This distinction
 prevents a second correction from damaging an already validated multi-point axis.
 
-Formula matching separates proposals from assignments. Sniff enumerates broad formula
-and catalogue proposals within 200 ppm, matching the library-annotation stage in
+Formula matching separates proposals from assignments. Sniff enumerates broad CHNOPS,
+halogen, silicon and iodine formula and catalogue proposals within 200 ppm, covering
+ordinary VOCs, common siloxane backgrounds and iodinated instrument references. This
+matches the library-annotation stage in
 [Mustafina et al. (2025)](https://doi.org/10.3390/diagnostics15212738), and shows their
 exact errors and catalogue names for expert investigation. Three or more independent
 `CALdata/Mapping` references define the authoritative axis and validate a run-specific
@@ -422,12 +424,18 @@ assigned as neutral analytes. Supported isotope and library-fragment channels in
 the parent formula/name proposals without pretending that the channel is another
 compound.
 
-`sniff peaks` reports `candidate_coverage` over the cleaned detected-peak list. Its
-categories partition that list into direct protonated formulas, alternative-ion
-formulas, inherited parent candidates, non-compound interpretations and unresolved
-channels. Both formula/link coverage and named-compound coverage are shown. The metric
-counts proposals, not unique identities or calibrated confidence; detector artefacts
-removed by the existing peak-shape safeguards are reported separately.
+`sniff peaks` reports `candidate_coverage` over canonical peak components: detections
+that the physical-resolution diagnostic marks as unresolved neighbours count once,
+preventing overlapping maxima from inflating the denominator. Its categories partition
+those components into direct protonated formulas, alternative-ion formulas, inherited
+parent candidates, non-compound interpretations and unresolved channels. Formula/link,
+named-compound and signal-weighted coverage are shown; the signal metric uses each
+component's strongest mean extracted Raw trace once and becomes unavailable if any
+component has no separable Raw trace. The metric counts proposals, not
+unique identities or calibrated confidence, and detector artefacts removed by the
+existing peak-shape safeguards are reported separately. The selected versioned
+`ion_role` and its evidence round-trip through saved reviews; moving a peak invalidates
+that automatic role rather than preserving stale evidence.
 
 By default `analyze` integrates each interval with each isolated peak's apex/window
 **re-centred on that interval's own spectrum** — peaks drift between intervals (a

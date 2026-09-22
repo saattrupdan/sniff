@@ -124,6 +124,7 @@ def _synthetic_data() -> dict[str, Any]:
                     "win_l": 0.04,
                     "win_r": 0.04,
                     "future": {"keep": [1, 2, 3]},
+                    "ion_role": {"future_role": {"keep": True}},
                 },
                 "id": 0,
                 "mz": 100.0,
@@ -133,6 +134,14 @@ def _synthetic_data() -> dict[str, Any]:
                 "k": None,
                 "k_estimated": False,
                 "flags": [],
+                "ion_role": {
+                    "model": "ion-role-v1",
+                    "kind": "isotope",
+                    "status": "supported",
+                    "label": "possible isotope",
+                    "evidence": ["test evidence"],
+                    "exclude_from_analyte_assignment": True,
+                },
                 "clustered": False,
                 "win_l": 0.04,
                 "win_r": 0.04,
@@ -1779,6 +1788,9 @@ def main() -> int:
             and first_peak["center"] == 100.001
             and first_peak["mass"] == 100.002
             and first_peak["future"] == {"keep": [1, 2, 3]}
+            and first_peak["ion_role"]["model"] == "ion-role-v1"
+            and first_peak["ion_role"]["kind"] == "isotope"
+            and first_peak["ion_role"]["future_role"] == {"keep": True}
             and first_range["merged_gaps"] == [{"start": 2, "end": 2}]
             and first_range["future"] == {"keep": True},
             "nested authored peak/range fields were not preserved on save",
@@ -1798,7 +1810,7 @@ def main() -> int:
             session,
             "(() => { const c=buildConfig(); const p=c.peaks[0], r=c.ranges[0]; "
             "return {apex:p.apex,center:p.center,mass:p.mass,future:p.future,"
-            "merged:r.merged_gaps,rangeFuture:r.future}; })()",
+            "role:p.ion_role,merged:r.merged_gaps,rangeFuture:r.future}; })()",
         )
         _assert(
             reloaded
@@ -1807,6 +1819,15 @@ def main() -> int:
                 "center": 100.001,
                 "mass": 100.002,
                 "future": {"keep": [1, 2, 3]},
+                "role": {
+                    "model": "ion-role-v1",
+                    "kind": "isotope",
+                    "status": "supported",
+                    "label": "possible isotope",
+                    "evidence": ["test evidence"],
+                    "exclude_from_analyte_assignment": True,
+                    "future_role": {"keep": True},
+                },
                 "merged": [{"start": 2, "end": 2}],
                 "rangeFuture": {"keep": True},
             },
