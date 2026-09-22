@@ -2462,6 +2462,11 @@ function selectPeak(p){
   const changed=selId!==p.id; selId=p.id;
   if(changed) renderPeaks();                          // don't re-render on re-click, so a label stays editable
   if(tab==="spec") jumpToPeak(p); else drawMain(); }
+function refreshPeakSelection(){ const sp=selPeak(), tof=document.getElementById("traceof");
+  if(tof) tof.textContent = sp? sp.label+" (m/z "+sp.mz.toFixed(3)+")":"—";
+  // the per-compound trace legend entry only makes sense once a compound is chosen
+  const ll=document.getElementById("leg-trace-line"); if(ll) ll.style.display=sp?"":"none";
+  renderScope(); renderId(); }
 function appendCatalogue(el,p,c,species){
   if(!species||!species.length) return;
   const box=document.createElement("div"); box.className="cataloguebox";
@@ -2629,7 +2634,16 @@ function renderPeaks(){ const box=document.getElementById("peaksbody"); if(!box)
       const r=ranges.find(rr=>rr._id===+ch.dataset.smp); if(!r) return;
       pushUndo(); toggleSel(p,r); renderPeaks(); redraw(); }; });
     const lbl=li.querySelector("[data-a=label]");
-    lbl.onclick=()=>selectPeak(p);                                   // clicking the label selects (no re-render if already selected)
+    // Make the input editable before the browser applies pointer focus. Selecting it
+    // in onclick would rebuild the list and destroy the input that was just focused.
+    lbl.onpointerdown=()=>{
+      if(selId!==p.id){ const current=ul.querySelector("li.sel");
+        if(current){ current.classList.remove("sel");
+          const oldLabel=current.querySelector("[data-a=label]"); if(oldLabel) oldLabel.readOnly=true; }
+        selId=p.id; li.classList.add("sel"); lbl.readOnly=false; }
+      // Label interaction edits rather than toggles a trace row off. Complete the
+      // selection here because changing readonly can suppress the later click event.
+      refreshPeakSelection(); drawMain(); if(tab==="spec") jumpToPeak(p); };
     lbl.onchange=()=>{ pushUndo(); p.label=lbl.value;
       if(p.identification_provenance){
         p.identification_provenance={...p.identification_provenance,label_source:"manual"};
@@ -2637,7 +2651,12 @@ function renderPeaks(){ const box=document.getElementById("peaksbody"); if(!box)
         if(p.identification_provenance.formula_source!=="nist-webbook-mass")
           delete p.identification_provenance.provider;
       }
-      renderPeaks(); redraw(); };
+      const pills=li.querySelector(".dc.pills"); if(pills) pills.innerHTML=peakPills(p);
+      updateMethods(); updateCalNote(); refreshPeakSelection(); drawMain(); scheduleSave(); };
+    // Defer reordering and pill refresh until focus has left the label list. Rebuilding
+    // while focus moves to another label would destroy that newly focused input.
+    lbl.onblur=()=>requestAnimationFrame(()=>{ const active=document.activeElement;
+      if(active&&active.matches("#peaksbody .lbl")) return; renderPeaks(); drawMain(); });
     const del=li.querySelector("[data-a=del]"); if(del) del.onclick=e=>{ e.stopPropagation(); deletePeak(p); };
     ul.appendChild(li); }
   box.appendChild(ul);
@@ -2656,12 +2675,7 @@ function renderPeaks(){ const box=document.getElementById("peaksbody"); if(!box)
     setAppColumns(peakTagWidth,peakDetailWidth);
   } else { peakTagWidth=0; peakDetailWidth=0; setAppColumns(0); }
   updatePeakToggle();
-  const sp=selPeak(); const tof=document.getElementById("traceof");
-  if(tof) tof.textContent = sp? sp.label+" (m/z "+sp.mz.toFixed(3)+")":"—";
-  // the per-compound trace legend entry only makes sense once a compound is chosen
-  const ll=document.getElementById("leg-trace-line"); if(ll) ll.style.display=sp?"":"none";
-  renderScope();
-  renderId(); }
+  refreshPeakSelection(); }
 
 // ---- identification: scored candidates + isotope evidence for the selected peak ----
 function pct(x){ return (x*100).toFixed(1)+"%"; }

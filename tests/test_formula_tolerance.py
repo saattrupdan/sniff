@@ -144,5 +144,5 @@ def test_fallback_candidates_are_not_assigned_automatically():
 
     assert peaks[0]["candidates"]
     assert peaks[0]["formula_tolerance"]["status"] == "fallback"
-    assert peaks[0]["suggested_label"].startswith("unresolved ion at m/z")
+    assert peaks[0]["suggested_label"].startswith("unknown m/z")
     assert "suggested_formula" not in peaks[0]

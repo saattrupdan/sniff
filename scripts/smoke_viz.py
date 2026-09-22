@@ -1237,6 +1237,54 @@ def _review_round_browser_pass(session: str) -> None:
         "the plot stops growing before the card below is full: " + str(split),
     )
 
+    # --- editing one label then clicking another must preserve the new focus ---
+    original_ui = _eval(session, "({tab,selId})")
+    for active_tab in ("trace", "spec"):
+        focus_target = _eval(
+            session,
+            "(() => { const order=orderedPeaks(); "
+            f"setTab({json.dumps(active_tab)}); selId=order[0].id; renderPeaks(); "
+            "const source=document.querySelector('#peaksbody li.sel .lbl'); "
+            "const target=document.querySelector('#peaksbody li:not(.sel) .lbl'); "
+            "source.dataset.editSource='true'; target.dataset.focusTest='true'; "
+            "return {sourceId:order[0].id, sourceLabel:order[0].label, "
+            "targetId:order[1].id, targetLabel:order[1].label}; })()",
+        )
+        temporary_label = f"Temporary {active_tab} label"
+        _browser(session, "fill", "[data-edit-source]", temporary_label)
+        _browser(session, "click", "[data-focus-test]")
+        label_focus = _eval(
+            session,
+            "(() => { const i=document.querySelector('[data-focus-test]'); "
+            f"const source=peaks.find(p=>p.id==={focus_target['sourceId']}); "
+            "return {exists:!!i, focused:document.activeElement===i, "
+            "readonly:i?i.readOnly:null, selectedId:selId, sourceLabel:source.label, "
+            "trace:document.getElementById('traceof').textContent}; })()",
+        )
+        _assert(
+            label_focus["exists"]
+            and label_focus["focused"]
+            and label_focus["readonly"] is False
+            and label_focus["selectedId"] == focus_target["targetId"]
+            and label_focus["sourceLabel"] == temporary_label
+            and label_focus["trace"].startswith(focus_target["targetLabel"]),
+            f"editing then switching labels failed on {active_tab}: "
+            + str({"target": focus_target, "state": label_focus}),
+        )
+        _browser(
+            session,
+            "eval",
+            "document.activeElement.blur(); "
+            f"peaks.find(p=>p.id==={focus_target['sourceId']}).label="
+            f"{json.dumps(focus_target['sourceLabel'])}; renderPeaks(); drawMain(); scheduleSave()",
+        )
+    _browser(
+        session,
+        "eval",
+        f"selId={json.dumps(original_ui['selId'])}; "
+        f"setTab({json.dumps(original_ui['tab'])}); renderPeaks(); drawMain()",
+    )
+
     # --- arrow keys walk the list the user is looking at, not the stored order ---
     nav = _eval(
         session,

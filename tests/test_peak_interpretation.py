@@ -310,7 +310,7 @@ def test_peak_without_formula_candidate_gets_explicit_unresolved_interpretation(
 
     interpretation = peak["interpretation_candidates"][0]
     assert interpretation["kind"] == "unresolved"
-    assert interpretation["label"] == "unresolved ion at m/z 41.0541"
+    assert interpretation["label"] == "unknown m/z 41.0541"
     assert interpretation["evidence"] == [
         "no plausible protonated-neutral formula fits the current exact-mass tolerance",
         "the peak overlaps a neighbouring channel",

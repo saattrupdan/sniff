@@ -1463,7 +1463,7 @@ def interpret_peak_roles(peaks, *, drift=1.0, R_phys=2400.0, traces=None):
                 interpretations.append(
                     {
                         "kind": "unresolved",
-                        "label": f"unresolved ion at m/z {masses[index]:.4f}",
+                        "label": f"unknown m/z {masses[index]:.4f}",
                         "source": "strict local formula search",
                         "evidence": evidence,
                         "exclude_from_analyte_assignment": True,

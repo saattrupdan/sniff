@@ -59,7 +59,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - Every detected peak now has either a strict formula candidate or an explicit
   scientific interpretation. Known reagent ions, evidence-backed possible isotope
   channels and detector artefacts are excluded from automatic analyte assignment;
-  unmatched channels are labelled as unresolved ions rather than being given fabricated
+  unmatched channels use an `unknown m/z X` label rather than being given fabricated
   compounds.
 - Peak discovery now detects high-prominence detector echoes that evade local noise
   rules. Classification requires a delay recurring behind several taller peaks in
@@ -110,6 +110,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Clicking an unselected peak label now leaves its input focused and editable instead of
+  rerendering the sidebar and immediately discarding focus.
 - The calibration fallback used protonated iodobenzene at 204.951 and could select its
   M+1 satellite. It now uses the documented 203.942993 molecular ion and exact
   H₃O⁺·H₂O at 37.028405. On the audited `ptr.h5`, this corrects the proposal axis while
