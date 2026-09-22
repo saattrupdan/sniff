@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -83,6 +84,44 @@ def test_candidate_enrichment_keeps_ptr_identity_and_score(tmp_path):
     assert enriched[0]["score"] == 0.7
     assert enriched[0]["catalogue"][0]["name"] == "Acetaldehyde"
     assert "catalogue" not in candidates[0]
+
+
+def test_pubchem_snapshot_enriches_supported_formula_without_changing_score(tmp_path):
+    snapshot = tmp_path / "pubchem.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source": "PubChem PUG REST",
+                "retrieved_at": "2026-09-01T00:00:00Z",
+                "compounds": [
+                    {
+                        "cid": 180,
+                        "formula": "C3H6O",
+                        "name": "Acetone",
+                        "iupac_name": "propan-2-one",
+                        "inchi": "InChI=1S/C3H6O/c1-3(2)4/h1-2H3",
+                        "inchi_key": "CSCPPACGZOOCGX-UHFFFAOYSA-N",
+                        "canonical_smiles": "CC(=O)C",
+                        "isomeric_smiles": "CC(=O)C",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    compounds = catalogue.CompoundCatalogue(
+        tmp_path / "missing.sqlite3",
+        pubchem_path=snapshot,
+    )
+    candidate = {"formula": "C3H6O", "score": 0.75}
+
+    enriched = compounds.enrich_candidates([candidate])[0]
+
+    assert enriched["score"] == 0.75
+    assert enriched["catalogue"][0]["source"] == "PubChem"
+    assert enriched["catalogue"][0]["pubchem_cid"] == 180
+    assert enriched["catalogue"][0]["canonical_smiles"] == "CC(=O)C"
 
 
 def test_bundled_catalogue_has_versioned_ptr_seed_and_searchable_metadata():

@@ -445,9 +445,14 @@ def build_viz_data(
         )
 
     masses = [float(p["mz"]) for p in peaks_cfg]
+    isotope_mode = analysis_settings.get("isotope_mode", "off")
     isotope_plan = (
-        ptrms.isotopes.build_isotope_plan(peaks_cfg, R_phys=R_phys)
-        if analysis_settings.get("isotope_mode") == "formula-v1"
+        ptrms.isotopes.build_isotope_plan(
+            peaks_cfg,
+            R_phys=R_phys,
+            model=isotope_mode,
+        )
+        if isotope_mode in ("formula-v1", "formula-envelope-v2")
         else None
     )
     extraction_masses = (
@@ -2417,12 +2422,13 @@ function appendCatalogue(el,p,c,species){
   const box=document.createElement("div"); box.className="cataloguebox";
   const title=document.createElement("b"); title.textContent="Bundled catalogue proposals";
   box.appendChild(title);
-  const note=document.createTextNode(" — NIST WebBook names, not PTR-MS proof");
+  const sources=[...new Set(species.map(item=>item.source||'NIST WebBook'))];
+  const note=document.createTextNode(" — "+sources.join(" and ")+" names/structures, not PTR-MS proof");
   box.appendChild(note);
   species.forEach(speciesItem=>{ const line=document.createElement("div"); line.className="cataloguerow";
     const link=document.createElement("a"); link.href=speciesItem.url; link.target="_blank";
     link.rel="noopener noreferrer"; link.textContent=speciesItem.name; line.appendChild(link);
-    const metadata=[speciesItem.cas,speciesItem.inchi_key].filter(Boolean).join(" · ");
+    const metadata=[speciesItem.source,speciesItem.pubchem_cid?`CID ${speciesItem.pubchem_cid}`:speciesItem.cas,speciesItem.inchi_key].filter(Boolean).join(" · ");
     if(metadata){ const detail=document.createElement("span"); detail.textContent=metadata; line.appendChild(detail); }
     const use=document.createElement("button"); use.type="button"; use.textContent="Use name";
     use.onclick=event=>{ event.stopPropagation(); assignCandidate(p,{...(c||{}),
@@ -2750,10 +2756,12 @@ function assignCandidate(p,c){
     channels:c.isotope_model.channels.map(ch=>({order:ch.order,mz:p.mz+ch.shift,
       ratio_expected:ch.ratio,ratio_observed:null,status:'stale until Done/Export'}))}; }
   if(c.k) p.k=c.k; p.k_estimated=!!c.k_estimated; if(c.flags) p.flags=c.flags;
-  if(c.catalogue_selected){ p.identification_provenance={automatic:false,
+  if(c.catalogue_selected){ const source=c.catalogue_selected.source||"NIST WebBook";
+    p.identification_provenance={automatic:false,
     formula_source:c.formula_source||"local-enumeration",label_source:"compound-catalogue",
-    provider:"bundled NIST Chemistry WebBook catalogue",
-    nist_id:c.catalogue_selected.nist_id,url:c.catalogue_selected.url};
+    provider:`bundled ${source} catalogue`,source,
+    nist_id:c.catalogue_selected.nist_id,pubchem_cid:c.catalogue_selected.pubchem_cid,
+    inchi_key:c.catalogue_selected.inchi_key,url:c.catalogue_selected.url};
   } else if(c.formula_source==="compound-catalogue"){
     p.identification_provenance={automatic:false,formula_source:"compound-catalogue",
       label_source:(c.preferred_name||c.name)?"bundled-ptr-library":"formula",

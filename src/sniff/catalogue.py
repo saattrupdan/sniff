@@ -11,7 +11,7 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-from . import formula_id, isotopes
+from . import formula_id, isotopes, pubchem
 
 CATALOGUE_SCHEMA_VERSION = 2
 CATALOGUE_RESOURCE = "compound_catalogue.sqlite3"
@@ -48,8 +48,13 @@ def default_catalogue_path():
 class CompoundCatalogue:
     """Small query facade over the versioned, bundled SQLite catalogue."""
 
-    def __init__(self, path=None):
+    def __init__(self, path=None, pubchem_path=None):
         self.path = Path(path) if path is not None else default_catalogue_path()
+        self.pubchem_path = (
+            Path(pubchem_path)
+            if pubchem_path is not None
+            else pubchem.default_snapshot_path()
+        )
 
     @property
     def available(self):
@@ -69,19 +74,24 @@ class CompoundCatalogue:
         if connection is None:
             return {}
         try:
-            return {
+            metadata = {
                 row["key"]: row["value"]
                 for row in connection.execute("SELECT key, value FROM metadata")
             }
         finally:
             connection.close()
+        metadata.update(
+            {
+                f"pubchem_{key}": str(value)
+                for key, value in pubchem.metadata(path=self.pubchem_path).items()
+            }
+        )
+        return metadata
 
     def lookup_formula(self, formula, *, limit=None):
         """Return validated species proposals for one exact molecular formula."""
         canonical = canonical_formula(formula)
         connection = self._connect()
-        if connection is None:
-            return []
         query = """
             SELECT f.formula, f.exact_mass, s.nist_id, s.name, s.cas,
                    s.inchi, s.inchi_key, s.url
@@ -94,11 +104,23 @@ class CompoundCatalogue:
         if limit is not None:
             query += " LIMIT ?"
             parameters.append(max(0, int(limit)))
-        try:
-            rows = connection.execute(query, parameters).fetchall()
-        finally:
-            connection.close()
-        return [dict(row) for row in rows]
+        rows = []
+        if connection is not None:
+            try:
+                rows = connection.execute(query, parameters).fetchall()
+            finally:
+                connection.close()
+        result = [{**dict(row), "source": "NIST WebBook"} for row in rows]
+        remaining = None if limit is None else max(0, int(limit) - len(result))
+        if remaining != 0:
+            pubchem_rows = pubchem.lookup_formula(
+                canonical,
+                path=self.pubchem_path,
+                limit=remaining,
+            )
+            exact_mass = formula_id.formula_mass(isotopes.parse_formula(canonical))
+            result.extend({**row, "exact_mass": exact_mass} for row in pubchem_rows)
+        return result
 
     def formulas_in_mass_range(self, neutral_mass, tol_da=0.012, *, limit=250):
         """Return catalogue formulae inside a strict neutral exact-mass window."""

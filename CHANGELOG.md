@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The bundled offline catalogue now includes a bounded, response-hashed PubChem PUG
+  REST snapshot for formula-supported name and structure proposals. PubChem evidence is
+  source-separated, locally packaged, never queried at runtime, and cannot create or
+  promote a formula assignment.
+- New schema-3 reviews use joint `formula-envelope-v2` fitting across connected assigned
+  parent and M+1/M+2 channels. Rank, condition, weighted residual and uncertainty gates
+  withhold inseparable or inconsistent isotope corrections; auxiliary channels remain
+  excluded from analyte rows and legacy reviews keep `formula-v1` arithmetic.
 - Peak discovery now reports versioned candidate coverage and separate alternative-ion
   proposals for condition-compatible hydration, water loss, charge transfer, hydride
   abstraction and evidence-backed multiply charged envelopes. Isotope and known-fragment

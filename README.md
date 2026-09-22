@@ -502,10 +502,25 @@ The sitemap crawl checkpoints every canonical species page in
 daily, and takes at least 7.5 days for roughly 129,000 species at the required delay.
 Cached pages can be reparsed without network access. Export refuses pending or
 unresolved records, classifies formula-less pages explicitly, rejects unsupported,
-non-ordinary and
-chemically implausible records, and writes the compact catalogue atomically. Only
-filtered identity metadata is exported to the package; WebBook HTML and EI spectra are
-never PTR identification evidence.
+non-ordinary and chemically implausible records, and writes the compact catalogue
+atomically. Only filtered identity metadata is exported to the package; WebBook HTML
+and EI spectra are never PTR identification evidence.
+
+The app also bundles `pubchem_enrichment.json`: an offline, source-separated PubChem
+PUG REST snapshot for formula proposals observed in the documented Sniff candidate
+scope. The current snapshot contains 664 structure/name proposals across 72 formulae,
+with at most ten deterministic CID records per formula. Every query URL and response
+SHA-256 is retained, and formulae with more results are explicitly marked truncated.
+PubChem CID, name, InChIKey and SMILES fields enrich a formula that already passed
+Sniff's formula gate; they do not create formulae, alter scores, or identify an isomer.
+PubChem and its contributors may attach source-specific rights, as described by the
+bundled NCBI policy URL. Runtime review is entirely offline. Maintainers can reproduce
+or extend the resumable snapshot from a full peak JSON export:
+
+```bash
+uv run python scripts/fetch_pubchem_enrichment.py \
+  --peaks-json peaks.json --max-compounds-per-formula 10
+```
 
 ## How it works
 
@@ -565,18 +580,21 @@ generation could not run. The accompanying interpretation explains that the chan
 instead be a reagent or inorganic ion, isotope, fragment, unresolved interference, noise
 peak, or a mass-calibration mismatch.
 Accepting a formula automatically derives its exact natural M+1 and M+2 auxiliary
-channels. These support expected/observed isotope diagnostics and guarded subtraction
-when a lower-mass compound's isotope overlaps another assigned parent. They do not
-become additional analytes. Monoisotopic-abundance scaling is available only when the
-calibration basis is explicitly `total`; legacy or unknown K conventions are never
-guessed. The installed package also includes the ionisation, compound-assignment, and
+channels. New analyses jointly fit connected assigned-parent envelopes in
+transmission-corrected signal space. The non-negative fit reports rank, conditioning,
+weighted residuals, fitted-cycle counts and relative uncertainty; missing,
+rank-deficient, inconsistent or uncertain envelopes become unavailable rather than
+being clipped into plausible concentrations. Auxiliary channels never become analyte
+rows, and the fit cannot create a formula or override mass eligibility. Monoisotopic
+abundance scaling is available only when the calibration basis is explicitly `total`;
+legacy or unknown K conventions are never guessed. The installed package also includes the ionisation, compound-assignment, and
 HCN/humidity reference documents.
 
-New app-generated configs carry `analysis_schema_version: 2`, use `empirical-v1` peak
-fitting and `formula-v1` isotope handling, and retain the same review and Export flow.
-Unversioned configs resolve to `gaussian-v1` with isotope handling off, preserving their
-historical arithmetic. Both model names remain explicit rollback settings under
-`analyze`.
+New app-generated configs carry `analysis_schema_version: 3`, use `empirical-v1` peak
+fitting and `formula-envelope-v2` isotope handling, and retain the same review and
+Export flow. Version-2 configs keep sequential `formula-v1` correction, while
+unversioned configs resolve to `gaussian-v1` with isotope handling off, preserving their
+historical arithmetic. Model names remain explicit rollback settings under `analyze`.
 
 ## Accuracy
 

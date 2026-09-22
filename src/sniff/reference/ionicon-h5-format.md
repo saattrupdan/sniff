@@ -181,11 +181,15 @@ clipped into plausible concentrations. The previous fixed-centre Gaussian model 
 available as `gaussian-v1` and is the reported fallback when an empirical profile cannot
 be established.
 
-Assigned formulas also derive exact natural M+1/M+2 auxiliary channels. After
-transmission correction, a predictable lower-mass parent isotope can be subtracted from
-a shared assigned-parent channel. The correction is withheld when its source or target
-is unavailable, its result is materially negative, or the formula is not assigned.
-Auxiliary channels are evidence and correction inputs, not independent analyte rows.
+Assigned formulas also derive exact natural M+1/M+2 auxiliary channels. Schema-3
+analyses build connected components wherever parent and isotope observations share a
+channel, then fit all parent amplitudes jointly in transmission-corrected signal space.
+The weighted non-negative solution propagates the design covariance and reports rank,
+condition, residual, fitted-cycle count and median relative uncertainty. Missing,
+rank-deficient, excessive-residual, negative or high-uncertainty solutions are withheld.
+This changes concentration input only: Raw and Corrected remain the observed extracted
+signals. Auxiliary channels are evidence and correction inputs, not independent analyte
+rows. Older schema-2 reviews retain their sequential `formula-v1` correction.
 
 ## What is NOT in the raw file (must be supplied)
 

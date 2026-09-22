@@ -151,8 +151,14 @@ def resolve_analysis_settings(config=None, args=None):
             sources[key] = "legacy default"
     if settings["peak_fit"] not in ("gaussian-v1", "empirical-v1"):
         raise ValueError("peak_fit must be gaussian-v1 or empirical-v1")
-    if settings["isotope_mode"] not in ("off", "formula-v1"):
-        raise ValueError("isotope_mode must be off or formula-v1")
+    if settings["isotope_mode"] not in (
+        "off",
+        "formula-v1",
+        "formula-envelope-v2",
+    ):
+        raise ValueError(
+            "isotope_mode must be off, formula-v1, or formula-envelope-v2"
+        )
     if settings["isotope_abundance_basis"] not in (
         "unknown",
         "calibrated",
@@ -1895,8 +1901,12 @@ def cmd_analyze(args):
             ranges if (real_ranges and settings["per_interval_windows"]) else None
         )
         isotope_plan = (
-            ptrms.isotopes.build_isotope_plan(peaks, R_phys=R_phys)
-            if settings["isotope_mode"] == "formula-v1"
+            ptrms.isotopes.build_isotope_plan(
+                peaks,
+                R_phys=R_phys,
+                model=settings["isotope_mode"],
+            )
+            if settings["isotope_mode"] in ("formula-v1", "formula-envelope-v2")
             else None
         )
         extraction_masses = (
@@ -2570,8 +2580,12 @@ def analyze_config_to_csv(h5_path, config, out, sep=";", include_cycle_rows=True
             ranges if (ranges_cfg and settings["per_interval_windows"]) else None
         )
         isotope_plan = (
-            ptrms.isotopes.build_isotope_plan(peaks, R_phys=R_phys)
-            if settings["isotope_mode"] == "formula-v1"
+            ptrms.isotopes.build_isotope_plan(
+                peaks,
+                R_phys=R_phys,
+                model=settings["isotope_mode"],
+            )
+            if settings["isotope_mode"] in ("formula-v1", "formula-envelope-v2")
             else None
         )
         extraction_masses = (

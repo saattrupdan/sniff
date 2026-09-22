@@ -442,12 +442,12 @@ def bootstrap_config(
     settings.update(
         {
             "peak_fit": "empirical-v1",
-            "isotope_mode": "formula-v1",
+            "isotope_mode": "formula-envelope-v2",
             "isotope_abundance_basis": "unknown",
         }
     )
     config = {
-        "analysis_schema_version": 2,
+        "analysis_schema_version": 3,
         "peaks": peaks,
         "ranges": ranges,
         "analyze": {k: v for k, v in settings.items() if k != "sources"},

@@ -1,6 +1,7 @@
 """Tests for measured-shape fitting of overlapping peak groups."""
 
 import unittest
+import warnings
 
 import numpy as np
 
@@ -55,6 +56,19 @@ class PeakFitTest(unittest.TestCase):
         np.testing.assert_allclose(amplitudes[0], [80.0, 35.0], rtol=0.04)
         np.testing.assert_allclose(amplitudes[1], [40.0, 70.0], rtol=0.04)
         self.assertTrue((amplitudes >= 0).all())
+
+    def test_extreme_spectrum_is_withheld_without_numerical_warnings(self):
+        centres = np.array([100.0, 100.02, 100.04])
+        sigmas = np.full(3, 3.0)
+        profile_x = np.linspace(-4.5, 4.5, 181)
+        profile = {"x": profile_x, "y": np.exp(-0.5 * profile_x**2)}
+        spectrum = np.full(220, np.finfo(np.float64).max / 4.0)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            fit = peak_fit.fit_group_design(spectrum, centres, sigmas, profile)
+
+        self.assertIn(fit["status"], {"unresolved", "failed"})
 
     def test_ill_conditioned_group_is_unresolved(self):
         x = np.arange(220)

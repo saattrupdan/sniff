@@ -145,12 +145,36 @@ def fit_group_design(
                 x, centres + shift, sigmas * width, profile_x, profile_y
             )
             design = np.column_stack((components, np.ones(len(x))))
-            coeff = solve_nonnegative(design, values)
-            residual = values - design @ coeff
-            score = float(np.dot(residual, residual))
-            if best is None or score < best[0]:
+            if (
+                not np.isfinite(design).all()
+                or float(np.max(np.abs(design))) > 1e6
+            ):
+                continue
+            singular = np.linalg.svd(design, compute_uv=False)
+            if (
+                np.count_nonzero(singular > singular[0] * 1e-10)
+                != design.shape[1]
+                or singular[-1] <= 0
+                or singular[0] / singular[-1] > 1e8
+            ):
+                continue
+            value_scale = max(float(np.max(np.abs(values))), 1.0)
+            scaled_values = values / value_scale
+            with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                coeff = solve_nonnegative(design, scaled_values)
+            if (
+                not np.isfinite(coeff).all()
+                or float(np.max(np.abs(coeff))) > 1e12
+            ):
+                continue
+            with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                residual = scaled_values - design @ coeff
+                score = float(np.dot(residual, residual))
+            if np.isfinite(score) and (best is None or score < best[0]):
                 best = (score, shift, width, components, design, coeff, residual)
 
+    if best is None:
+        return _failed_fit(lo, hi, len(centres), "group design is rank-deficient")
     _, shift, width, components, design, coeff, residual = best
     component_design = design[:, :-1]
     singular = np.linalg.svd(component_design, compute_uv=False)
@@ -160,7 +184,8 @@ def fit_group_design(
         if singular.size and singular[-1] > 0
         else float("inf")
     )
-    scale = float(np.linalg.norm(values - coeff[-1]))
+    scaled_values = values / max(float(np.max(np.abs(values))), 1.0)
+    scale = float(np.linalg.norm(scaled_values - coeff[-1]))
     relative_residual = float(np.linalg.norm(residual) / scale) if scale > 0 else 0.0
     correlation = _max_correlation(component_design)
     reliable = (
@@ -169,12 +194,21 @@ def fit_group_design(
         and correlation <= 0.995
         and relative_residual <= 0.35
     )
+    if reliable:
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            projection = np.linalg.pinv(component_design)
+        if not np.isfinite(projection).all():
+            reliable = False
+    if not reliable:
+        projection = np.full(
+            (len(centres), component_design.shape[0]),
+            np.nan,
+            dtype=np.float64,
+        )
     status = "reliable" if reliable else "unresolved"
 
-    # Baseline is estimated per cycle from the edge bins before applying this component
-    # projection. A pseudoinverse is stable here because rank/conditioning are reported
-    # and unreliable results are withheld by the caller.
-    projection = np.linalg.pinv(component_design)
+    # Baseline is estimated per cycle from edge bins before this projection. Unreliable
+    # designs never receive a usable pseudoinverse.
     return {
         "usable": True,
         "lo": lo,
@@ -200,12 +234,20 @@ def apply_group_design(chunk, fit):
     edges = np.concatenate((values[:, :edge_count], values[:, -edge_count:]), axis=1)
     baseline = np.median(edges, axis=1)
     centred = np.clip(values - baseline[:, None], 0.0, None)
-    unconstrained = centred @ fit["projection"].T
+    scale = np.maximum(np.max(centred, axis=1), 1.0)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        unconstrained = (centred / scale[:, None]) @ fit["projection"].T
+        unconstrained *= scale[:, None]
+    unconstrained[~np.isfinite(unconstrained)] = np.nan
     if np.all(unconstrained >= 0):
         return unconstrained
     result = np.empty_like(unconstrained)
     for row, values_row in enumerate(centred):
-        result[row] = solve_nonnegative(fit["components"], values_row)
+        row_scale = max(float(np.max(values_row)), 1.0)
+        solved = solve_nonnegative(fit["components"], values_row / row_scale)
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            result[row] = solved * row_scale
+    result[~np.isfinite(result)] = np.nan
     return result
 
 
@@ -221,7 +263,10 @@ def _max_correlation(design):
     if design.shape[1] < 2:
         return 0.0
     normalised = design / np.maximum(np.linalg.norm(design, axis=0), 1e-15)
-    correlation = normalised.T @ normalised
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        correlation = normalised.T @ normalised
+    if not np.isfinite(correlation).all():
+        return float("inf")
     correlation[np.diag_indices_from(correlation)] = 0.0
     return float(np.max(np.abs(correlation)))
 

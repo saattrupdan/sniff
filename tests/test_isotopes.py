@@ -108,6 +108,130 @@ class IsotopeModelTest(unittest.TestCase):
         np.testing.assert_allclose(net[parent["mz"]], expected, equal_nan=True)
         self.assertTrue(diagnostics[0]["abundance_applied"])
 
+    def test_isotope_observation_clustering_is_peak_order_independent(self):
+        peaks = [
+            {"mz": 100.0, "formula": "C6H12O"},
+            {"mz": 100.02, "formula": "C5H10O2"},
+        ]
+
+        forward = isotopes.build_isotope_plan(peaks)
+        reverse = isotopes.build_isotope_plan(list(reversed(peaks)))
+
+        self.assertEqual(forward["extraction_masses"], reverse["extraction_masses"])
+        forward_channels = sorted(
+            (parent["mz"], channel["order"], channel["observation_mz"])
+            for parent in forward["parents"]
+            for channel in parent["channels"]
+        )
+        reverse_channels = sorted(
+            (parent["mz"], channel["order"], channel["observation_mz"])
+            for parent in reverse["parents"]
+            for channel in parent["channels"]
+        )
+        self.assertEqual(forward_channels, reverse_channels)
+
+    def test_weighted_nonnegative_solver_refits_after_negative_component(self):
+        design = np.array([[1.0, 1.0], [1.0, 0.0]])
+        observed = np.array([1.0, 2.0])
+
+        estimate, active = isotopes._solve_weighted_nonnegative(design, observed)
+
+        np.testing.assert_allclose(estimate, [1.5, 0.0])
+        self.assertEqual(active, [0])
+        self.assertTrue((estimate >= 0).all())
+
+    def test_joint_envelope_withholds_parent_on_nonnegative_boundary(self):
+        plan = {
+            "version": isotopes.ENVELOPE_MODEL_VERSION,
+            "parents": [
+                {
+                    "mz": 100.0,
+                    "formula": "CH2O",
+                    "monoisotopic_fraction": 1.0,
+                    "channels": [
+                        {
+                            "observation_mz": 101.0,
+                            "ratio": 1.0,
+                            "order": 1,
+                        }
+                    ],
+                },
+                {
+                    "mz": 101.0,
+                    "formula": "CH4O",
+                    "monoisotopic_fraction": 1.0,
+                    "channels": [],
+                },
+            ],
+        }
+        corrected = {
+            100.0: np.full(4, 2.0),
+            101.0: np.full(4, 1.0),
+        }
+
+        net, diagnostics = isotopes.correct_parent_signals(corrected, plan)
+
+        target = next(item for item in diagnostics if item["mz"] == 101.0)
+        self.assertNotEqual(target["status"], "envelope-fitted")
+        self.assertTrue(np.isnan(net[101.0]).all())
+
+    def test_joint_envelope_fit_recovers_overlapping_parents(self):
+        source = {"mz": 100.0, "formula": "C6H12O"}
+        source_model = isotopes.formula_isotope_model(source["formula"])
+        target = {
+            "mz": source["mz"] + source_model["channels"][0]["shift"],
+            "formula": "C5H10O2",
+        }
+        plan = isotopes.build_isotope_plan(
+            [source, target],
+            model=isotopes.ENVELOPE_MODEL_VERSION,
+        )
+        amplitudes = {
+            source["mz"]: np.array([100.0, 120.0, 80.0, 110.0]),
+            target["mz"]: np.array([20.0, 25.0, 18.0, 23.0]),
+        }
+        corrected = {
+            mass: np.zeros(4, dtype=np.float64)
+            for mass in plan["extraction_masses"]
+        }
+        for parent in plan["parents"]:
+            signal = amplitudes[parent["mz"]]
+            corrected[parent["mz"]] += signal
+            for channel in parent["channels"]:
+                corrected[channel["observation_mz"]] += signal * channel["ratio"]
+
+        net, diagnostics = isotopes.correct_parent_signals(corrected, plan)
+
+        np.testing.assert_allclose(net[source["mz"]], amplitudes[source["mz"]])
+        np.testing.assert_allclose(net[target["mz"]], amplitudes[target["mz"]])
+        self.assertTrue(all(item["status"] == "envelope-fitted" for item in diagnostics))
+        self.assertTrue(all(item["model"] == "formula-envelope-v2" for item in diagnostics))
+        self.assertTrue(all(item["median_relative_uncertainty"] > 0 for item in diagnostics))
+
+    def test_joint_envelope_fit_withholds_rank_deficient_component(self):
+        peaks = [
+            {"mz": 100.0, "formula": "C6H12O"},
+            {"mz": 100.0, "formula": "C6H12O"},
+        ]
+        plan = isotopes.build_isotope_plan(
+            peaks,
+            model=isotopes.ENVELOPE_MODEL_VERSION,
+        )
+        corrected = {
+            mass: np.full(4, 100.0)
+            for mass in plan["extraction_masses"]
+        }
+
+        net, diagnostics = isotopes.correct_parent_signals(corrected, plan)
+
+        self.assertTrue(np.isnan(net[100.0]).all())
+        self.assertTrue(
+            all(
+                item["status"] == "withheld-ill-conditioned-envelope"
+                for item in diagnostics
+            )
+        )
+
     def test_negative_spillover_solution_is_withheld(self):
         source = {"mz": 59.0, "formula": "C20H20"}
         source_model = isotopes.formula_isotope_model(source["formula"])
